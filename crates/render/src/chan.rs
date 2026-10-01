@@ -65,6 +65,13 @@ impl Chan {
     /// channel takes its color byte's top `nbits`. Grey uses plan9port's
     /// fixed-point `RGB2K` (libmemdraw/draw.c:10); m (cmap) has no
     /// colormap here and x (ignore) bits stay 0.
+    /// True for single-channel grey descriptors (GREY1/2/4/8) — the
+    /// mask / subfont-bit format family memdraw blends by value.
+    pub fn is_grey(self) -> bool {
+        let cc = self.0;
+        cc != 0 && (cc >> 4) & 0x0F == 3 && (cc >> 8) == 0
+    }
+
     pub fn rgbatoimg(self, rgba: u32) -> u32 {
         let r = rgba >> 24;
         let g = (rgba >> 16) & 0xFF;

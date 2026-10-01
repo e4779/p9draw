@@ -22,8 +22,8 @@ pub mod image;
 
 pub use chan::{Chan, ChanError};
 pub use image::{
-    compose_over, compose_over_masked, draw_tile, draw_tile_masked, fill, write_bytes,
-    write_bytes_compressed, Image, RenderError,
+    compose_over, compose_over_masked, copy_rect, draw_tile, draw_tile_masked, fill, grey_at,
+    set_grey, write_bytes, write_bytes_compressed, Image, RenderError,
 };
 
 /// Wire geometry shared with the codec: raster and protocol code use the

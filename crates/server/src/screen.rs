@@ -44,7 +44,7 @@ use std::time::Duration;
 use p9draw_host::{HostEvent, ScreenHost};
 use p9draw_protocol::{DrawCmd, Point, Rect, Wsysmsg, decode, encode, parse_drawcmds};
 use p9draw_render::{
-    Chan, Image, compose_over, compose_over_masked, draw_tile_masked, fill, write_bytes,
+    Chan, Image, compose_over, compose_over_masked, copy_rect, draw_tile_masked, fill, write_bytes,
     write_bytes_compressed,
 };
 
@@ -428,6 +428,47 @@ fn init_font(
     Ok(())
 }
 
+/// 'l' loadchar (devdraw.c:991): copy the glyph cell R from the src
+/// image (P aligned with R.min) into the font image — an opaque copy,
+/// mask memopaque — and record the cell metrics verbatim.
+#[allow(clippy::too_many_arguments)]
+fn load_char(
+    images: &mut HashMap<u32, Image>,
+    fonts: &mut HashMap<u32, FontData>,
+    font_id: u32,
+    src_id: u32,
+    index: u16,
+    r: Rect,
+    sp: Point,
+    left: u8,
+    width: u8,
+) -> Result<(), String> {
+    let font = fonts
+        .get_mut(&font_id)
+        .ok_or_else(|| "image not a font".to_string())?;
+    if usize::from(index) >= font.fchars.len() {
+        return Err("character index out of range".to_string());
+    }
+    let src = images
+        .get(&src_id)
+        .cloned()
+        .ok_or_else(|| "unknown id for draw image".to_string())?;
+    let font_img = images
+        .get_mut(&font_id)
+        .ok_or_else(|| "unknown id for draw image".to_string())?;
+    copy_rect(font_img, r, &src, sp);
+    let font = fonts.get_mut(&font_id).expect("checked above");
+    font.fchars[usize::from(index)] = FChar {
+        minx: sx(r.min.x),
+        maxx: sx(r.max.x),
+        miny: r.min.y as u8,
+        maxy: r.max.y as u8,
+        left: left as i8,
+        width,
+    };
+    Ok(())
+}
+
 // --- the screen: image store + window host --------------------------------
 
 /// Client-visible screen. Single-threaded, driven by [`serve_stdio`].
@@ -727,8 +768,11 @@ impl Screen {
                 DrawCmd::InitFont { font_id, nchars, ascent } => {
                     init_font(&self.images, &self.windows, &mut self.fonts, font_id, nchars, ascent)?;
                 }
-                DrawCmd::LoadFont { .. } | DrawCmd::String { .. } | DrawCmd::StringBg { .. } => {
-                    // stages 2-4: accepted, not rasterized yet
+                DrawCmd::LoadFont { font_id, src_id, index, r, sp, left, width } => {
+                    load_char(&mut self.images, &mut self.fonts, font_id, src_id, index, r, sp, left, width)?;
+                }
+                DrawCmd::String { .. } | DrawCmd::StringBg { .. } => {
+                    // stages 3-4: accepted, not rasterized yet
                 }
                 DrawCmd::Ellipse { .. } | DrawCmd::Polygon { .. } | DrawCmd::FillPolygon { .. } => {
                     // arc/polygon raster: v0 gap
@@ -1366,5 +1410,107 @@ mod tests {
         assert_eq!(f.ascent, 12);
         assert_eq!(f.fchars.len(), 3);
         assert_eq!(f.fchars[0], FChar::default());
+    }
+
+    // --- fonts: 'l' loadchar (devdraw.c:991) ------------------------------
+
+    /// A GREY1 bits image with a 3×5 block of ink at (0,4). Uses the same
+    /// 16×16 geometry as the font image above.
+    fn inked_bits_image() -> Image {
+        let mut bits = grey1_image(3);
+        for y in 4..9u32 {
+            for x in 0..3u32 {
+                let bit = (y as usize * 2) * 8 + x as usize; // 8 px wide ⇒ 1 B/row
+                bits.pixels[bit / 8] |= 0x80 >> (bit % 8);
+            }
+        }
+        bits
+    }
+
+    #[test]
+    fn load_char_copies_bits_and_records_metrics() {
+        let mut images = HashMap::from([(1, grey1_image(1)), (3, inked_bits_image())]);
+        let mut fonts = HashMap::new();
+        init_font(&images, &[], &mut fonts, 1, 2, 10).unwrap();
+        // cell R = (8,4)-(11,9): copy of the inked block, right half.
+        load_char(
+            &mut images,
+            &mut fonts,
+            1,
+            3,
+            1,
+            Rect { min: Point { x: 8, y: 4 }, max: Point { x: 11, y: 9 } },
+            Point { x: 0, y: 4 },
+            0xFD, // wire i8 = -3
+            7,
+        )
+        .unwrap();
+        // Metrics land verbatim (devdraw FChar truncates R to its fields).
+        let fc = fonts[&1].fchars[1];
+        assert_eq!((fc.minx, fc.maxx), (8, 11));
+        assert_eq!((fc.miny, fc.maxy), (4, 9));
+        assert_eq!(fc.left, -3);
+        assert_eq!(fc.width, 7);
+        // Unwritten cells stay zero.
+        assert_eq!(fonts[&1].fchars[0], FChar::default());
+        // Bits landed: the cell area is ink, the rest of the font image is not.
+        let img = &images[&1];
+        let inked: Vec<bool> = (0..16u32)
+            .flat_map(|y| (0..16u32).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let bit = (y as usize * 2) * 8 + x as usize;
+                img.pixels[bit / 8] & (0x80 >> (bit % 8)) != 0
+            })
+            .collect();
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                let want = (8..11).contains(&x) && (4..9).contains(&y);
+                assert_eq!(inked[(y * 16 + x) as usize], want, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn load_char_errors_are_verbatim_devdraw_strings() {
+        let mut images = HashMap::from([(1, grey1_image(1)), (3, inked_bits_image())]);
+        let mut fonts = HashMap::new();
+        // No 'i' yet ⇒ not a font.
+        assert_eq!(
+            load_char(
+                &mut images,
+                &mut fonts,
+                1,
+                3,
+                0,
+                Rect { min: Point { x: 0, y: 0 }, max: Point { x: 3, y: 5 } },
+                Point { x: 0, y: 0 },
+                0,
+                0,
+            )
+            .unwrap_err(),
+            "image not a font"
+        );
+        init_font(&images, &[], &mut fonts, 1, 2, 10).unwrap();
+        let r = Rect { min: Point { x: 0, y: 0 }, max: Point { x: 3, y: 5 } };
+        // Index 2 is out of the 2-char table; index 100 far out.
+        assert_eq!(
+            load_char(&mut images, &mut fonts, 1, 3, 2, r, Point { x: 0, y: 0 }, 0, 0)
+                .unwrap_err(),
+            "character index out of range"
+        );
+        assert_eq!(
+            load_char(&mut images, &mut fonts, 1, 3, 100, r, Point { x: 0, y: 0 }, 0, 0)
+                .unwrap_err(),
+            "character index out of range"
+        );
+        // Unknown src image.
+        assert_eq!(
+            load_char(&mut images, &mut fonts, 1, 9, 0, r, Point { x: 0, y: 0 }, 0, 0)
+                .unwrap_err(),
+            "unknown id for draw image"
+        );
+        // Nothing was drawn or recorded along the error paths.
+        assert_eq!(fonts[&1].fchars[0], FChar::default());
+        assert!(images[&1].pixels.iter().all(|&b| b == 0));
     }
 }

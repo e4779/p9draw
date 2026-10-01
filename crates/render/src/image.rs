@@ -245,11 +245,48 @@ pub fn fill(img: &mut Image, rect: Rect, value: u32) {
     }
 }
 
+/// Normalized grey (0..255) at absolute image pixel (x, y) for
+/// single-channel images of any depth — packed rows for the sub-byte
+/// GREY1/2/4 (leftmost pixel = most significant bits, like memimage).
+/// None outside the rect or for a zero-depth stub.
+pub fn grey_at(img: &Image, x: i32, y: i32) -> Option<u8> {
+    if img.pixels.is_empty() || !contains(img.rect, x, y) {
+        return None;
+    }
+    let depth = img.chan.depth() as usize;
+    let lx = (x - sx(img.rect.min.x)) as usize;
+    let ly = (y - sx(img.rect.min.y)) as usize;
+    let stride = (dx(img.rect) as usize * depth + 7) / 8;
+    let bit = (ly * stride + lx * depth / 8) * 8 + lx * depth % 8;
+    let maxv = ((1u32 << depth) - 1) as u32;
+    let raw = (u32::from(img.pixels[bit / 8]) >> (8 - depth - bit % 8)) & maxv;
+    Some((raw * 255 / maxv) as u8)
+}
+
+/// Write a normalized grey (0..255) at absolute image pixel (x, y),
+/// scaling to the channel depth with rounding. No-op outside the rect
+/// or for a zero-depth stub.
+pub fn set_grey(img: &mut Image, x: i32, y: i32, v: u8) {
+    if img.pixels.is_empty() || !contains(img.rect, x, y) {
+        return;
+    }
+    let depth = img.chan.depth() as usize;
+    let maxv = ((1u32 << depth) - 1) as u16;
+    let raw = ((u16::from(v) * maxv + 127) / 255) as u8;
+    let lx = (x - sx(img.rect.min.x)) as usize;
+    let ly = (y - sx(img.rect.min.y)) as usize;
+    let stride = (dx(img.rect) as usize * depth + 7) / 8;
+    let bit = (ly * stride + lx * depth / 8) * 8 + lx * depth % 8;
+    let shift = 8 - depth - bit % 8;
+    let byte = &mut img.pixels[bit / 8];
+    *byte = (*byte & !((maxv as u8) << shift)) | (raw << shift);
+}
+
 /// 'd' mask channel (SPEC.md §6 maskid/maskpt): per-pixel alpha from a
-/// single-channel 8-bit grey image (acme's allocimagemix qmask is GREY8).
-/// Absent masks and anything not 8-bit grey draw opaque (v0: memdraw
-/// would read the alpha channel of richer mask chans; the traffic only
-/// ever uses GREY1-full/GREY8 — see the live captures).
+/// single-channel grey image — acme's allocimagemix qmask is GREY8 and
+/// its font cache images are GREY1..GREY8. Absent masks and any other
+/// channel shape draw opaque (v0: memdraw would read the alpha channel
+/// of richer mask chans; the traffic only ever uses grey masks).
 enum Mask<'a> {
     /// No usable mask: every src pixel lands opaque.
     Opaque,
@@ -276,9 +313,7 @@ impl Mask<'_> {
         } else if !contains(img.rect, qx, qy) {
             return None;
         }
-        // depth 8 ⇒ one 8-bit channel ⇒ one byte per pixel.
-        let off = (qy - mminy) as usize * img.bpl() + (qx - mminx) as usize;
-        Some(img.pixels[off])
+        grey_at(img, qx, qy)
     }
 }
 
@@ -345,6 +380,57 @@ pub fn draw_tile_masked(
     );
 }
 
+/// 'l' loadchar copy (memdraw dst=R ← src at P, no mask): an opaque
+/// byte blit for byte-aligned equal-depth images (the [blit] path), a
+/// per-pixel normalized rescale for grey images of different depths
+/// (acme's GREY1 glyph bits into a deeper cache image), a no-op for
+/// other channel mismatches. Clips to dst rect ∩ clipr; a repl source
+/// tiles like 'd'.
+pub fn copy_rect(dst: &mut Image, dst_rect: Rect, src: &Image, src_pt: Point) {
+    if dst.bpp() > 0 && dst.bpp() == src.bpp() {
+        blit(
+            dst,
+            dst_rect,
+            src,
+            (sx(src_pt.x), sx(src_pt.y)),
+            src.rect,
+            src.repl,
+            None,
+        );
+        return;
+    }
+    if !dst.chan.is_grey() || !src.chan.is_grey() {
+        return;
+    }
+    let clip = isect(isect(dst.rect, dst.clipr), dst_rect);
+    if is_empty(clip) {
+        return;
+    }
+    let sminx = sx(src.rect.min.x);
+    let sminy = sx(src.rect.min.y);
+    let (period_x, period_y) = (dx(src.rect), dy(src.rect));
+    let anchor_x = sx(dst_rect.min.x);
+    let anchor_y = sx(dst_rect.min.y);
+    for row in 0..dy(clip) {
+        for col in 0..dx(clip) {
+            let px = sx(clip.min.x) + col;
+            let py = sx(clip.min.y) + row;
+            // P maps onto dst_rect.min (before clipping), like blit.
+            let (mut qx, mut qy) = (
+                sx(src_pt.x) + (px - anchor_x),
+                sx(src_pt.y) + (py - anchor_y),
+            );
+            if src.repl {
+                qx = sminx + (qx - sminx).rem_euclid(period_x);
+                qy = sminy + (qy - sminy).rem_euclid(period_y);
+            }
+            if let Some(v) = grey_at(src, qx, qy) {
+                set_grey(dst, px, py, v);
+            }
+        }
+    }
+}
+
 /// Core v0 blit: walk clipped dst pixels, map each to source coordinates
 /// via `src_pt` (source pixel at `dst_rect.min`), optionally wrap-tile,
 /// drop out-of-window pixels, copy per pixel (or grey-mask blend). No-op
@@ -362,25 +448,27 @@ fn blit(
     if is_empty(clip) || dst.bpp() != src.bpp() {
         return;
     }
-    // Only single-channel 8-bit masks blend; everything else draws opaque.
+    // Only single-channel grey masks blend (any depth — GREY1 font cells
+    // as well as GREY8); everything else draws opaque.
     let mask = match mask {
-        Some((m, pt)) if m.chan.depth() == 8 => Mask::Grey {
+        Some((m, pt)) if m.chan.is_grey() => Mask::Grey {
             img: m,
             pt: (sx(pt.x), sx(pt.y)),
         },
         _ => Mask::Opaque,
     };
-    // A non-repl mask window bounds the draw (outside = transparent).
-    if let Mask::Grey { img, pt } = &mask {
+    let anchor_x = sx(dst_rect.min.x);
+    let anchor_y = sx(dst_rect.min.y);
+    // A non-repl mask bounds the draw: mask pixel `pt` sits on the dst
+    // anchor (dst_rect.min), so the dst-space window is the mask rect
+    // shifted onto the anchor (outside = transparent).
+    if let Mask::Grey { img, .. } = &mask {
         if !img.repl {
             let w = Rect {
-                min: Point {
-                    x: pt.0 as u32,
-                    y: pt.1 as u32,
-                },
+                min: dst_rect.min,
                 max: Point {
-                    x: (pt.0 + dx(img.rect)) as u32,
-                    y: (pt.1 + dy(img.rect)) as u32,
+                    x: (anchor_x + dx(img.rect)) as u32,
+                    y: (anchor_y + dy(img.rect)) as u32,
                 },
             };
             clip = isect(clip, w);
@@ -396,8 +484,6 @@ fn blit(
     let sminy = sx(src.rect.min.y);
     let period_x = dx(src.rect);
     let period_y = dy(src.rect);
-    let anchor_x = sx(dst_rect.min.x);
-    let anchor_y = sx(dst_rect.min.y);
     let dst_min_x = sx(dst.rect.min.x);
     let dst_min_y = sx(dst.rect.min.y);
     for row in 0..dy(clip) {
@@ -987,5 +1073,165 @@ mod tests {
         let img = Image::with_pixels(1, r, r, Chan::XRGB32, false, vec![0; 16]).unwrap();
         assert_eq!(img.pixels.len(), 16);
         assert_eq!(img.clipr, r);
+    }
+
+    // --- packed grey access + 'l' copy_rect (font glyph loads) -------------
+
+    /// A GREY1 image whose row bytes are given verbatim (width 8 ⇒ 1 B/row).
+    fn grey1(rows: &[u8]) -> Image {
+        Image::with_packed(
+            1,
+            rect(0, 0, 8, rows.len() as i32),
+            rect(0, 0, 8, rows.len() as i32),
+            Chan::GREY1,
+            false,
+            rows.to_vec(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn chan_is_grey_matches_the_grey_family_only() {
+        assert!(Chan::GREY1.is_grey());
+        assert!(Chan::GREY2.is_grey());
+        assert!(Chan::GREY4.is_grey());
+        assert!(Chan::GREY8.is_grey());
+        assert!(!Chan::XRGB32.is_grey());
+        assert!(!Chan::CMAP8.is_grey());
+        assert!(!Chan(0).is_grey());
+    }
+
+    #[test]
+    fn grey_at_reads_packed_rows_msb_first() {
+        // memimage packs the first (leftmost) pixel into the HIGH bits:
+        // 0xF0 → x0..3 inked, 0x0F → x4..7 inked.
+        let img = grey1(&[0xF0, 0x0F]);
+        assert_eq!(grey_at(&img, 0, 0), Some(255));
+        assert_eq!(grey_at(&img, 3, 0), Some(255));
+        assert_eq!(grey_at(&img, 4, 0), Some(0));
+        assert_eq!(grey_at(&img, 7, 0), Some(0));
+        assert_eq!(grey_at(&img, 4, 1), Some(255));
+        assert_eq!(grey_at(&img, 0, 1), Some(0));
+        assert_eq!(grey_at(&img, 8, 0), None);
+        assert_eq!(grey_at(&img, -1, 0), None);
+    }
+
+    #[test]
+    fn set_grey_scales_and_packs_roundtrip() {
+        let mut img = grey1(&[0x00]);
+        set_grey(&mut img, 0, 0, 255);
+        set_grey(&mut img, 7, 0, 255);
+        set_grey(&mut img, 3, 0, 128); // rounds to 1 at depth 1; x3 = bit 4
+        assert_eq!(img.pixels, vec![0b1001_0001]);
+        assert_eq!(grey_at(&img, 0, 0), Some(255));
+        assert_eq!(grey_at(&img, 3, 0), Some(255));
+        // GREY8 passes values through unchanged.
+        let mut g8 = Image::with_packed(
+            1,
+            rect(0, 0, 2, 1),
+            rect(0, 0, 2, 1),
+            Chan::GREY8,
+            false,
+            vec![0, 0],
+        )
+        .unwrap();
+        set_grey(&mut g8, 1, 0, 200);
+        assert_eq!(g8.pixels, vec![0, 200]);
+        assert_eq!(grey_at(&g8, 1, 0), Some(200));
+    }
+
+    #[test]
+    fn copy_rect_moves_packed_glyph_bits_between_grey_depths() {
+        // 3×5 cell of ink at (0,4) in an 8-wide bits image …
+        let mut bits = grey1(&[0; 16]);
+        for y in 4..9 {
+            for x in 0..3 {
+                set_grey(&mut bits, x, y, 255);
+            }
+        }
+        // … copied into a deeper GREY8 cache image (acme's depth-max cache).
+        let mut cache = Image::with_packed(
+            2,
+            rect(0, 0, 16, 16),
+            rect(0, 0, 16, 16),
+            Chan::GREY8,
+            false,
+            vec![0; 256],
+        )
+        .unwrap();
+        copy_rect(&mut cache, rect(8, 2, 11, 7), &bits, Point { x: 0, y: 4 });
+        for y in 0..16i32 {
+            for x in 0..16i32 {
+                let ink = (8..11).contains(&x) && (2..7).contains(&y);
+                assert_eq!(
+                    grey_at(&cache, x, y),
+                    Some(if ink { 255 } else { 0 }),
+                    "({x},{y})"
+                );
+            }
+        }
+        // GREY1→GREY1 keeps the same packed bits bit for bit.
+        let mut cache1 = grey1(&[0; 16]);
+        copy_rect(&mut cache1, rect(4, 4, 7, 9), &bits, Point { x: 0, y: 4 });
+        for y in 0..16i32 {
+            for x in 0..8i32 {
+                let ink = (4..7).contains(&x) && (4..9).contains(&y);
+                assert_eq!(
+                    grey_at(&cache1, x, y),
+                    Some(if ink { 255 } else { 0 }),
+                    "({x},{y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_rect_clips_to_dst_and_tiles_repl() {
+        // P maps onto dst_rect.min BEFORE clipping: rows 1,2 of a draw
+        // anchored at y=0 take bits rows 1,2 even when row 0 is clipped.
+        let bits = grey1(&[0xFF, 0x00, 0xFF]);
+        let mut cache = grey1(&[0x00; 4]);
+        cache.clipr = rect(0, 1, 8, 3);
+        copy_rect(&mut cache, rect(-4, 0, 4, 3), &bits, Point { x: 0, y: 0 });
+        // Only cols 0..4 are inside the draw rect; bits cols 4..8 are ink.
+        assert_eq!(cache.pixels, vec![0x00, 0x00, 0xF0, 0x00]);
+        // A repl grey source tiles with the image period.
+        let mut tile = grey1(&[0xF0]);
+        tile.repl = true;
+        let mut dst = grey1(&[0x00, 0x00]);
+        copy_rect(&mut dst, rect(0, 0, 8, 2), &tile, Point { x: 4, y: 0 });
+        assert_eq!(dst.pixels, vec![0x0F, 0x0F]);
+    }
+
+    #[test]
+    fn blit_blends_sub_byte_grey_masks_like_memdraw() {
+        // GREY1 cell 2 rows of 0b1000_0000: pixel x0 inked, x1 off.
+        let cell = grey1(&[0b1000_0000, 0b1000_0000, 0, 0]);
+        let mut dst = Image::new(1, rect(0, 0, 2, 2), Chan::XRGB32).unwrap();
+        fill(&mut dst, rect(0, 0, 2, 2), px(0x10, 0x20, 0x30));
+        let src = Image::new(2, rect(0, 0, 1, 1), Chan::XRGB32).unwrap();
+        draw_tile_masked(
+            &mut dst,
+            rect(0, 0, 2, 2),
+            &src,
+            Point { x: 0, y: 0 },
+            Some((&cell, Point { x: 0, y: 0 })),
+        );
+        assert_eq!(pixel_at(&dst, 0, 0), 0); // ink: opaque src (black)
+        assert_eq!(pixel_at(&dst, 1, 0), px(0x10, 0x20, 0x30)); // mask 0: dst kept
+        // The mask window is the cell mapped onto the dst anchor: a draw
+        // whose rect reaches past the cell leaves the rest untouched.
+        let mut wide = Image::new(3, rect(0, 0, 4, 1), Chan::XRGB32).unwrap();
+        fill(&mut wide, rect(0, 0, 4, 1), px(9, 9, 9));
+        draw_tile_masked(
+            &mut wide,
+            rect(0, 0, 4, 1),
+            &src,
+            Point { x: 0, y: 0 },
+            Some((&cell, Point { x: 0, y: 0 })),
+        );
+        assert_eq!(pixel_at(&wide, 0, 0), 0);
+        assert_eq!(pixel_at(&wide, 1, 0), px(9, 9, 9));
+        assert_eq!(pixel_at(&wide, 2, 0), px(9, 9, 9));
     }
 }
