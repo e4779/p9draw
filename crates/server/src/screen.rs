@@ -539,14 +539,17 @@ fn draw_string(
         .get_mut(&dst_id)
         .ok_or_else(|| "unknown id for draw image".to_string())?;
 
+    // background (devdraw.c:1317-1334) and restores it after the string.
+    let ascent = font.ascent;
+    let saved_clip = dst.clipr;
+    dst.clipr = clip_r;
     if let Some((bg, bg_pt)) = bg_img {
-        let ascent = i32::from(font.ascent);
         let sum_w: i32 = indices
             .iter()
             .map(|&ci| i32::from(font.fchars[usize::from(ci)].width))
             .sum();
         let bx = sx(p.x);
-        let by = sx(p.y) - ascent;
+        let by = sx(p.y) - i32::from(ascent);
         let r = Rect {
             min: Point {
                 x: bx as u32,
@@ -567,10 +570,6 @@ fn draw_string(
             compose_over_masked(dst, r, &bg, src_rect, None);
         }
     }
-
-    let ascent = font.ascent;
-    let saved_clip = dst.clipr;
-    dst.clipr = clip_r;
     let mut pen = p;
     let mut sp = sp;
     for &ci in indices {
