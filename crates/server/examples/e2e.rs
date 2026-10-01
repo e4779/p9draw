@@ -444,8 +444,16 @@ fn run() -> i32 {
                     let (gx, gy) = (16 + lx, 18 + ly);
                     let want = if (20..28).contains(&gx) && (24..32).contains(&gy) { BLACK } else { WHITE };
                     if got[i * 4..i * 4 + 4] != want {
+                        let mut map = String::from("region map (first byte/px):");
+                        for row in 0..20 {
+                            map.push_str("\\n  ");
+                            for col in 0..16 {
+                                let o = (row * 16 + col) * 4;
+                                map.push(match got[o] { 0xAA => 'P', 0xFF => 'W', 0x00 => 'B', _ => '?' });
+                            }
+                        }
                         why = Some(format!(
-                            "pixel local ({lx},{ly}) / global ({gx},{gy}) = {:02x?}, want {want:02x?}",
+                            "pixel local ({lx},{ly}) / global ({gx},{gy}) = {:02x?}, want {want:02x?}\\n{map}",
                             &got[i * 4..i * 4 + 4]
                         ));
                         break;
