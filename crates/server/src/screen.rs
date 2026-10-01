@@ -17,8 +17,11 @@
 //!   poll_events cycle: HostEvent::Mouse → Rrdmouse (msec = /proc/uptime
 //!   ms, `resized` rides byte 19 of the msec group — the drawfcall.c
 //!   `p[19]` quirk, SPEC.md §4), Key → Rrdkbd4, Resize → recreate image 0
-//!   and raise the resized flag (delivered by the next Rrdmouse),
-//!   Close → exit;
+//!   and raise the resized flag (flushed to a parked Trdmouse right away,
+//!   or queued as a synthetic mouse event for the next read), Close →
+//!   exit. Trdmouse is answered only when the mouse state changed since
+//!   the last delivered event (devdraw blocks the read; an instant
+//!   unchanged reply makes the client spin the RPC at full speed);
 //! - unknown drawfcall types get Rerror, so the client tells us what is
 //!   still missing (SPEC.md §2.3: Rerror answers any request).
 //!
@@ -364,6 +367,10 @@ pub struct Screen {
     kbdlegtags: VecDeque<u8>,
     /// last mouse state, plan9 button mask (1/2/4, 8/16 = wheel).
     mouse: Option<(i32, i32, u8)>,
+    /// `mouse` changed since the last delivered Rrdmouse. A Trdmouse is
+    /// answered only when this is set — devdraw blocks the read otherwise,
+    /// and an instant unchanged reply makes the client spin the RPC.
+    mouse_fresh: bool,
     /// set by Resize, carried by the next Rrdmouse (SPEC.md §5), then reset.
     resized: bool,
     dpi: u32,
@@ -400,6 +407,7 @@ impl Screen {
             kbd4tags: VecDeque::new(),
             kbdlegtags: VecDeque::new(),
             mouse: None,
+            mouse_fresh: false,
             resized: false,
             dpi: SCREEN_DPI,
             clientid: 1,
@@ -633,9 +641,14 @@ impl Screen {
     fn on_mouse(&mut self, x: i32, y: i32, buttons: u8, out: &mut impl Write) -> io::Result<()> {
         self.mouse = Some((x, y, buttons));
         if let Some(tag) = self.mousetags.pop_front() {
+            self.mouse_fresh = false;
             let reply = mouse_reply(x, y, buttons, read_uptime_ms(), u8::from(self.resized));
             self.resized = false;
             send(&reply, tag, out)?;
+        } else {
+            // No reader waiting: keep the state parked as the answer to the
+            // next Trdmouse (plan9 allows replying from the latest mouse).
+            self.mouse_fresh = true;
         }
         Ok(())
     }
@@ -652,16 +665,30 @@ impl Screen {
         Ok(())
     }
 
-    fn on_resize(&mut self, w: u32, h: u32) {
+    fn on_resize(&mut self, w: u32, h: u32, out: &mut impl Write) -> io::Result<()> {
         if w == 0 || h == 0 {
-            return;
+            return Ok(());
         }
         self.win = (w, h);
         if let Ok(img) = Image::new(0, rect_of(w, h), SCREEN_CHAN) {
             self.images.insert(0, img);
             self.resized = true;
             self.present();
+            // devdraw reports a resize as a mouse event promptly (the
+            // client re-inits on resized=1): answer a parked read now
+            // instead of waiting for the next motion, or queue the
+            // synthetic event for the next Trdmouse.
+            if let Some(tag) = self.mousetags.pop_front() {
+                let (x, y, buttons) = self.mouse.unwrap_or((0, 0, 0));
+                let reply = mouse_reply(x, y, buttons, read_uptime_ms(), u8::from(self.resized));
+                self.resized = false;
+                self.mouse_fresh = false;
+                send(&reply, tag, out)?;
+            } else {
+                self.mouse_fresh = true;
+            }
         }
+        Ok(())
     }
 
     /// Pump one host event. Ok(true) → window closed, hang up.
@@ -669,7 +696,7 @@ impl Screen {
         match ev {
             HostEvent::Mouse { x, y, buttons } => self.on_mouse(x, y, buttons, out)?,
             HostEvent::Key(c) => self.on_key(c, out)?,
-            HostEvent::Resize { w, h } => self.on_resize(w, h),
+            HostEvent::Resize { w, h } => self.on_resize(w, h, out)?,
             HostEvent::Close => return Ok(true),
         }
         Ok(false)
@@ -680,26 +707,27 @@ impl Screen {
     fn handle(&mut self, tag: u8, msg: Wsysmsg, out: &mut impl Write) -> io::Result<()> {
         match msg {
             Wsysmsg::Trdmouse => {
-                match self.mouse {
-                    Some((x, y, buttons)) => {
-                        let reply =
-                            mouse_reply(x, y, buttons, read_uptime_ms(), u8::from(self.resized));
-                        self.resized = false;
-                        send(&reply, tag, out)?;
-                    }
-                    None => {
-                        if self.mousetags.len() >= QUEUE_CAP {
-                            send(
-                                &Wsysmsg::Rerror {
-                                    error: "too many queued mouse reads".to_string(),
-                                },
-                                tag,
-                                out,
-                            )?;
-                        } else {
-                            self.mousetags.push_back(tag);
-                        }
-                    }
+                // Answer only when the state changed since the last
+                // delivered event — devdraw blocks the read; replying
+                // instantly with unchanged state makes the client spin the
+                // RPC at full speed (the idle 87% CPU burn).
+                if self.mouse_fresh {
+                    let (x, y, buttons) = self.mouse.expect("fresh state implies a known mouse");
+                    let reply =
+                        mouse_reply(x, y, buttons, read_uptime_ms(), u8::from(self.resized));
+                    self.resized = false;
+                    self.mouse_fresh = false;
+                    send(&reply, tag, out)?;
+                } else if self.mousetags.len() >= QUEUE_CAP {
+                    send(
+                        &Wsysmsg::Rerror {
+                            error: "too many queued mouse reads".to_string(),
+                        },
+                        tag,
+                        out,
+                    )?;
+                } else {
+                    self.mousetags.push_back(tag);
                 }
             }
             Wsysmsg::Trdkbd4 => {
@@ -827,7 +855,9 @@ fn send(msg: &Wsysmsg, tag: u8, out: &mut impl Write) -> io::Result<()> {
 /// a real window. A reader thread assembles frames (FrameAssembler) into a
 /// channel; the main loop pumps host events and answers frames. stdin EOF
 /// or HostEvent::Close ends the process — the pipe lifetime IS the session
-/// lifetime, like real devdraw.
+/// lifetime, like real devdraw. The frame channel doubles as the sleep:
+/// `recv_timeout(16 ms)` bounds the wake cadence with the window open, so
+/// an idle session costs ~0% CPU; `present` runs only on real pixel changes.
 pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let log_reader = Arc::clone(&logger);
@@ -994,6 +1024,16 @@ mod tests {
     fn uptime_wraps_like_the_u32_wire_word() {
         // 5e6 s = 5e9 ms > u32::MAX: devdraw's msec wraps; client deltas stay sane.
         assert_eq!(uptime_ms_from_str("5000000.00"), Some(705_032_704));
+    }
+
+    #[test]
+    fn uptime_matches_the_live_interactive_fixture() {
+        // fixtures-analysis.md OPEN-5: first live Rrdmouse msec =
+        // 1 342 223 032 ms ≈ 15.53 days of hlab uptime.
+        assert_eq!(
+            uptime_ms_from_str("1342223.032 53777.04"),
+            Some(1_342_223_032)
+        );
     }
 
     // --- 'I' info reply (fixture: Trddraw 145 → Rrddraw 144) ----------------
