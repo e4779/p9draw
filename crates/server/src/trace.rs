@@ -33,9 +33,23 @@ pub fn log_cmd(cmd: &DrawCmd) {
     }
 }
 
+/// The `op=<…>` token of [`line`], reused to prefix Rerror reasons
+/// (`draw op 'd': …`). Errors are rare, so re-formatting is fine.
+pub fn op_letter(cmd: &DrawCmd) -> String {
+    for tok in line(cmd).split_whitespace() {
+        if let Some(op) = tok.strip_prefix("op=") {
+            return op.to_string();
+        }
+    }
+    String::new()
+}
+
 /// `cmd op=<wire letter> id=<n|-> rect=(x0,y0)-(x1,y1)|- bytes=<n>`.
 /// `bytes` counts the command's variable data tail (pixel data, string
-/// indices, vertex lists); 0 for fixed-size commands.
+/// indices, vertex lists); 0 for fixed-size commands. Fields absent on
+/// the wire print as `-`: 'v' is drawflush (devdraw.c:1406) — a 1-byte
+/// op with no id/rect — so `op=v id=- rect=-` in a live trace is the
+/// correct rendering, not a formatting bug.
 fn line(cmd: &DrawCmd) -> String {
     let (op, id, r, bytes): (String, Option<u32>, Option<Rect>, usize) = match cmd {
         DrawCmd::Allocate { id, r, .. } => ("b".into(), Some(*id), Some(*r), 0),
@@ -115,6 +129,16 @@ mod tests {
         assert_eq!(line(&DrawCmd::Flush), "cmd op=v id=- rect=- bytes=0");
         let s = line(&DrawCmd::Unknown { op: 0x7f });
         assert!(s.starts_with("cmd op=#7f id=- rect=- bytes=0"), "s: {s}");
+    }
+
+    #[test]
+    fn op_letter_maps_wire_letters() {
+        assert_eq!(op_letter(&DrawCmd::Flush), "v");
+        assert_eq!(
+            op_letter(&DrawCmd::WritePixels { id: 1, r: rect(0, 0, 1, 1), data: vec![] }),
+            "y"
+        );
+        assert_eq!(op_letter(&DrawCmd::Unknown { op: 0x7f }), "#7f");
     }
 
     #[test]

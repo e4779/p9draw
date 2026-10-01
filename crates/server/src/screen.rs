@@ -214,7 +214,7 @@ fn make_image(
     value: u32,
 ) -> Result<Image, String> {
     if rect_dx(r) <= 0 || rect_dy(r) <= 0 {
-        return Err("bad draw command".to_string());
+        return Err("bad image rectangle (empty)".to_string());
     }
     let depth = chan.depth();
     if depth == 0 {
@@ -456,13 +456,30 @@ impl Screen {
 
     /// Apply one Twrdraw payload. Ok(dirty) — dirty means pixels changed
     /// (or a flush arrived) and the screen should be re-presented.
+    ///
+    /// Rerror payloads name the failing command: parse errors carry the
+    /// op byte and offset (ProtocolError Display); apply errors are
+    /// prefixed with the op letter here.
     fn apply(&mut self, data: &[u8]) -> Result<bool, String> {
-        let cmds = parse_drawcmds(data).map_err(|_| "bad draw command".to_string())?;
+        let cmds = parse_drawcmds(data).map_err(|e| format!("bad draw command: {e}"))?;
         let mut dirty = false;
         for cmd in cmds {
             // P9DRAW_TRACE=1 (trace.rs): log each command just before it
             // applies; a failing one surfaces as the Twrdraw Rerror.
             trace::log_cmd(&cmd);
+            let op = trace::op_letter(&cmd);
+            dirty |= self
+                .apply_one(cmd)
+                .map_err(|e| format!("draw op '{op}': {e}"))?;
+        }
+        Ok(dirty)
+    }
+
+    /// Apply one parsed draw command (see [`Screen::apply`]).
+    fn apply_one(&mut self, cmd: DrawCmd) -> Result<bool, String> {
+        let mut dirty = false;
+        // Single-command loop keeps the arm bodies at their indentation.
+        for cmd in [cmd] {
             match cmd {
                 DrawCmd::Allocate { id, screen_id, refresh: _, chan, repl, r, clip_r, value } => {
                     if id == 0 {
@@ -658,8 +675,8 @@ impl Screen {
                 | DrawCmd::Top { .. } => {
                     // window-manager chrome without v0 visual effect
                 }
-                DrawCmd::Unknown { op: _ } => {
-                    return Err("bad draw command".to_string());
+                DrawCmd::Unknown { op } => {
+                    return Err(format!("unknown draw command byte 0x{op:02x}"));
                 }
             }
         }

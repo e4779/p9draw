@@ -68,4 +68,7 @@ printed every 30 s and once more at exit (`crates/server/src/stats.rs`).
 The other serve diagnostic is `P9DRAW_TRACE=1`: one log line per applied
 draw command — op letter, image id, rect, data byte count
 (`crates/server/src/trace.rs`). Off by default; this is the lens to read
-a live acme session through.
+a live acme session through. Rerror payloads name the failing command:
+parse errors carry the op byte and offset, apply errors are prefixed
+`draw op '<letter>':`. `'v'` is drawflush — a 1-byte op with no id/rect,
+printed as `id=- rect=-`.
