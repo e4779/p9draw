@@ -658,6 +658,11 @@ pub struct Screen {
 /// devdraw's refresh machinery, SPEC.md §6 'b' screen_id). Free fn so
 /// the composite is testable without a display; [`Screen::present`]
 /// calls it on every dirty Twrdraw ('d'/'x'/'y'/... and the 'v' flush).
+///
+/// Sink contract: the composite lands in the caller's screen image —
+/// present() passes the STORE's `images[0]`, so the wire readback
+/// ('r' ReadPixels + Trddraw) and the host surface observe the same
+/// composited screen; there is no separate present buffer.
 fn composite_windows(scr: &mut Image, images: &HashMap<u32, Image>, windows: &[u32]) {
     for id in windows {
         if let Some(w) = images.get(id) {
@@ -979,8 +984,19 @@ impl Screen {
         Ok(dirty)
     }
 
-    /// Composite windows over image 0 and publish to the host surface.
+    /// Composite the windows into the STORE's screen image (`images[0]`)
+    /// — the single sink Trddraw readback ('r' + Trddraw) also reads —
+    /// then publish that same image to the host surface. One composite
+    /// per present; the surface is a projection of `images[0]`, never a
+    /// second receiver, and the composite lands before the Rwrdraw
+    /// reply leaves the dispatch loop, so any readback after a flushed
+    /// draw sees the windows (real devdraw semantics: Trddraw returns
+    /// the composited screen).
     fn present(&mut self) {
+        // `remove`/`insert` only works around composite_windows taking
+        // the screen by `&mut` alongside the shared window map: the
+        // composite goes back into the store before anything else
+        // reads image 0.
         let mut scr = match self.images.remove(&0) {
             Some(s) => s,
             None => return,
@@ -1121,6 +1137,12 @@ impl Screen {
                 match self.apply(&data) {
                     Ok(dirty) => {
                         if dirty {
+                            // One composite+publish per batch: present()
+                            // writes the windows into the store's
+                            // images[0] before the Rwrdraw below, so a
+                            // later ReadPixels/Trddraw never sees a
+                            // pre-composite screen and the composite is
+                            // never run twice for one batch.
                             self.present();
                         }
                         send(&Wsysmsg::Rwrdraw { count: data.len() as u32 }, tag, out)?;
@@ -1536,13 +1558,18 @@ mod tests {
             &[0, 1],
         )
         .unwrap();
-        // 'v' flush: present() composites the window over image 0.
+        // 'v' flush: present() composites the window over image 0 and
+        // puts the composited screen BACK into the store — images[0] is
+        // the sink readback reads (no separate present buffer).
         let mut scr = images.remove(&0).unwrap();
         composite_windows(&mut scr, &images, &windows);
-        // 'r' readback of the region, byte-for-byte like ReadPixels.
+        images.insert(0, scr);
+        // 'r' readback THROUGH THE STORE's image 0, byte-for-byte like
+        // the ReadPixels handler — the exact bytes Trddraw drains in the
+        // container e2e's window-readback step.
         let region = rect(16, 18, 16, 20);
         let mut got = Vec::new();
-        read_pixels_into(&scr, region, &mut got);
+        read_pixels_into(images.get(&0).unwrap(), region, &mut got);
         assert_eq!(got.len(), 16 * 20 * 4);
         const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
         const BLACK: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
