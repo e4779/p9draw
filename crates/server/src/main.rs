@@ -23,6 +23,7 @@ mod net;
 mod pump;
 mod screen;
 mod serve;
+mod stats;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -95,8 +96,14 @@ fn cmd_serve(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     // Default log target is stderr: stdout carries the drawfcall stream.
-    let logger = make_logger(&log_file, Logger::stderr)?;
-    screen::serve_stdio(logger).map_err(|e| format!("serve: {e}"))?;
+    let logger: Arc<Logger> = make_logger(&log_file, Logger::stderr)?;
+    // Diagnostic counters: P9DRAW_STATS=1 buckets every frame by wire
+    // type and logs a line every 30 s (stats.rs); a final line lands
+    // here on exit so short sessions leave evidence too.
+    stats::init_from_env();
+    stats::spawn_reporter(Arc::clone(&logger));
+    screen::serve_stdio(Arc::clone(&logger)).map_err(|e| format!("serve: {e}"))?;
+    stats::log_final(&logger);
     Ok(ExitCode::SUCCESS)
 }
 

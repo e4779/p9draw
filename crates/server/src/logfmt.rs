@@ -17,42 +17,10 @@ pub fn frame_line(dir: &str, tag: u8, msg: &Wsysmsg) -> String {
     }
 }
 
+// Wire names come from the single table in stats.rs (shared with the
+// P9DRAW_STATS buckets).
 fn type_name(msg: &Wsysmsg) -> &'static str {
-    match msg {
-        Wsysmsg::Rerror { .. } => "Rerror",
-        Wsysmsg::Trdmouse => "Trdmouse",
-        Wsysmsg::Rrdmouse { .. } => "Rrdmouse",
-        Wsysmsg::Tmoveto { .. } => "Tmoveto",
-        Wsysmsg::Rmoveto => "Rmoveto",
-        Wsysmsg::Tcursor { .. } => "Tcursor",
-        Wsysmsg::Rcursor => "Rcursor",
-        Wsysmsg::Tbouncemouse { .. } => "Tbouncemouse",
-        Wsysmsg::Rbouncemouse => "Rbouncemouse",
-        Wsysmsg::Trdkbd => "Trdkbd",
-        Wsysmsg::Rrdkbd { .. } => "Rrdkbd",
-        Wsysmsg::Tlabel { .. } => "Tlabel",
-        Wsysmsg::Rlabel => "Rlabel",
-        Wsysmsg::Tinit { .. } => "Tinit",
-        Wsysmsg::Rinit => "Rinit",
-        Wsysmsg::Trdsnarf => "Trdsnarf",
-        Wsysmsg::Rrdsnarf { .. } => "Rrdsnarf",
-        Wsysmsg::Twrsnarf { .. } => "Twrsnarf",
-        Wsysmsg::Rwrsnarf => "Rwrsnarf",
-        Wsysmsg::Trddraw { .. } => "Trddraw",
-        Wsysmsg::Rrddraw { .. } => "Rrddraw",
-        Wsysmsg::Twrdraw { .. } => "Twrdraw",
-        Wsysmsg::Rwrdraw { .. } => "Rwrdraw",
-        Wsysmsg::Ttop => "Ttop",
-        Wsysmsg::Rtop => "Rtop",
-        Wsysmsg::Tresize { .. } => "Tresize",
-        Wsysmsg::Rresize => "Rresize",
-        Wsysmsg::Tcursor2 { .. } => "Tcursor2",
-        Wsysmsg::Rcursor2 => "Rcursor2",
-        Wsysmsg::Tctxt { .. } => "Tctxt",
-        Wsysmsg::Rctxt => "Rctxt",
-        Wsysmsg::Trdkbd4 => "Trdkbd4",
-        Wsysmsg::Rrdkbd4 { .. } => "Rrdkbd4",
-    }
+    crate::stats::type_name(msg.msg_type())
 }
 
 /// Key fields per type, formatted for grep-ability. Long strings and data

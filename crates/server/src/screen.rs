@@ -43,6 +43,7 @@ use p9draw_render::{Chan, Image, compose_over, draw_tile, fill};
 
 use crate::frameread::FrameAssembler;
 use crate::pump::Logger;
+use crate::stats;
 
 /// Last resort when neither the Tinit hint nor `$WINSIZE` yields a
 /// size (SPEC.md §2.4 winsize is a client hint; 900x700 is our fallback
@@ -870,6 +871,7 @@ impl Screen {
 }
 
 fn send(msg: &Wsysmsg, tag: u8, out: &mut impl Write) -> io::Result<()> {
+    stats::record_reply(msg);
     out.write_all(&encode(msg, tag))?;
     out.flush()
 }
@@ -934,8 +936,12 @@ pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
         match rx.recv_timeout(idle) {
             Ok(frame) => {
                 let (tag, msg) = match decode(&frame) {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        stats::record_frame(v.1.msg_type(), frame.len());
+                        v
+                    }
                     Err(e) => {
+                        stats::record_frame(stats::BAD, frame.len());
                         logger.log(&format!("serve: undecodable frame: {e}"));
                         let tag = frame.get(4).copied().unwrap_or(0);
                         send(
