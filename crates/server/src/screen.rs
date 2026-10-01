@@ -1489,6 +1489,76 @@ mod tests {
         assert_eq!(at(&scr, 10, 10), black, "earlier window still visible outside the later one");
     }
 
+    #[test]
+    fn window_readback_e2e_pin_ink_at_global_20_24() {
+        // The container e2e "window-readback" step (examples/e2e.rs §6),
+        // replayed headless op-for-op: 'b' window 6 (XRGB32, born white,
+        // 120x90), 'b' GREY1 1x1 repl ink 7 (DBlack), 'x' stringbg into
+        // the WINDOW at baseline (20,30), 'v' flush -> present(). The 'r'
+        // readback of image 0 over (16,18)-(32,38) must show the glyph
+        // cells (20,24)-(28,32) black at their GLOBAL coordinates and
+        // white elsewhere (window fill + white bg rect) — the exact
+        // matrix the e2e checks byte-for-byte.
+        let rect = |x: u32, y: u32, w: u32, h: u32| Rect {
+            min: Point { x, y },
+            max: Point { x: x + w, y: y + h },
+        };
+        let full = rect(0, 0, 120, 90);
+        let font_rect = rect(0, 0, 16, 16);
+        let mut glyph_rows = vec![0u8; 32];
+        for row in 4..12 {
+            glyph_rows[row * 2] = 0xF0;
+            glyph_rows[row * 2 + 1] = 0xF0;
+        }
+        let mut images = HashMap::new();
+        images.insert(0, make_image(0, full, full, Chan::XRGB32, false, 0xFFFF_AAFF).unwrap());
+        images.insert(2, make_image(2, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        images.insert(3, make_image(3, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        write_bytes(images.get_mut(&3).unwrap(), font_rect, &glyph_rows).unwrap();
+        images.insert(5, make_image(5, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::XRGB32, true, 0xFFFF_FFFF).unwrap());
+        images.insert(7, make_image(7, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::GREY1, true, 0x0000_00FF).unwrap());
+        images.insert(6, make_image(6, full, full, Chan::XRGB32, false, 0xFFFF_FFFF).unwrap());
+        let windows = vec![6u32];
+        let mut fonts = HashMap::new();
+        init_font(&images, &windows, &mut fonts, 2, 2, 10).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 0, rect(0, 4, 4, 8), Point { x: 0, y: 4 }, 0, 4).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 1, rect(8, 4, 4, 8), Point { x: 8, y: 4 }, 0, 4).unwrap();
+        draw_string(
+            &mut images,
+            &fonts,
+            6,
+            7,
+            2,
+            Point { x: 20, y: 30 },
+            full,
+            Point { x: 0, y: 0 },
+            Some((5, Point { x: 0, y: 0 })),
+            &[0, 1],
+        )
+        .unwrap();
+        // 'v' flush: present() composites the window over image 0.
+        let mut scr = images.remove(&0).unwrap();
+        composite_windows(&mut scr, &images, &windows);
+        // 'r' readback of the region, byte-for-byte like ReadPixels.
+        let region = rect(16, 18, 16, 20);
+        let mut got = Vec::new();
+        read_pixels_into(&scr, region, &mut got);
+        assert_eq!(got.len(), 16 * 20 * 4);
+        const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
+        const BLACK: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+        for i in 0..(got.len() / 4) {
+            let (lx, ly) = ((i as u32) % 16, (i as u32) / 16);
+            let (gx, gy) = (16 + lx, 18 + ly);
+            let want = if (20..28).contains(&gx) && (24..32).contains(&gy) { BLACK } else { WHITE };
+            assert_eq!(
+                &got[i * 4..i * 4 + 4],
+                &want[..],
+                "global ({gx},{gy}) must be {}",
+                if want == BLACK { "black (window ink)" } else { "white (window fill/bg)" },
+            );
+        }
+    }
+
     // --- winsize (SPEC.md §2.4 parsewinsize) ------------------------------
 
     #[test]
