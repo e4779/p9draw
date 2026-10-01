@@ -138,6 +138,46 @@ mod tests {
             op_letter(&DrawCmd::WritePixels { id: 1, r: rect(0, 0, 1, 1), data: vec![] }),
             "y"
         );
+        // Font ops: the letters devdraw.c dispatches on (885/991/1273).
+        assert_eq!(op_letter(&DrawCmd::InitFont { font_id: 9, nchars: 4, ascent: 7 }), "i");
+        assert_eq!(
+            op_letter(&DrawCmd::LoadFont {
+                font_id: 9,
+                src_id: 1,
+                index: 0,
+                r: rect(0, 0, 1, 1),
+                sp: Point { x: 0, y: 0 },
+                left: 0,
+                width: 3,
+            }),
+            "l"
+        );
+        assert_eq!(
+            op_letter(&DrawCmd::String {
+                dst_id: 1,
+                src_id: 0,
+                font_id: 9,
+                p: Point { x: 0, y: 0 },
+                clip_r: rect(0, 0, 1, 1),
+                sp: Point { x: 0, y: 0 },
+                indices: vec![0],
+            }),
+            "s"
+        );
+        assert_eq!(
+            op_letter(&DrawCmd::StringBg {
+                dst_id: 1,
+                src_id: 0,
+                font_id: 9,
+                p: Point { x: 0, y: 0 },
+                clip_r: rect(0, 0, 1, 1),
+                sp: Point { x: 0, y: 0 },
+                bg_id: 0,
+                bg_pt: Point { x: 0, y: 0 },
+                indices: vec![0],
+            }),
+            "x"
+        );
         assert_eq!(op_letter(&DrawCmd::Unknown { op: 0x7f }), "#7f");
     }
 

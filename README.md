@@ -30,9 +30,13 @@ printed as PASSED / SKIP / FAILED (exit 0 unless a step FAILED):
    semantics);
 3. `fill` — Twrdraw `'d'` src=1 over image 0 across the whole screen plus
    `'v'` flush in one stream (count = 45+1 = 46, like the live capture);
-4. `readback` — Twrdraw `'r'` + `Trddraw`: the screen bytes must equal the
-   render-semantics expectation `[B,G,R,X]` = `AA FF FF 00` per pixel;
-5. `mouse` — `Tbouncemouse` then `Trdmouse` → `Rrdmouse` within 5 s;
+4. `text` — Twrdraw font ops: 'b' GREY1 cache image + `'i'` (nchars,
+   ascent), 'b' GREY1 bits image + `'y'` rows, two `'l'` glyph loads,
+   'b' black/white 1×1 repl tiles, then one `'x'` stringbg + `'v'`;
+5. `readback` — Twrdraw `'r'` over the text region + `Trddraw`: the
+   'x' background rect (Σwidth×Dy(font image) at the baseline) must be
+   white, the glyph cells black, the surround paleyellow `[AA FF FF 00]`;
+6. `mouse` — `Tbouncemouse` then `Trdmouse` → `Rrdmouse` within 5 s;
    **SKIP without an X display**, so the harness stays CI-safe.
 
 Build and run (headless: every step honestly SKIPs, exit 0):
