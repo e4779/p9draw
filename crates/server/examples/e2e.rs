@@ -279,19 +279,26 @@ fn run() -> i32 {
             if got.len() != need {
                 why = Some(format!("got {} bytes, want {need}", got.len()));
             }
+            // Rrddraw bytes are REGION-LOCAL: index i = ly*14 + lx over the
+            // (8,4)-(22,24) window. Every matrix index below is local; the
+            // global pair is (8+lx, 4+ly) and belongs in the report only.
+            // Indexing got[] with global coords would silently read a
+            // shifted pixel (e.g. (6*14+10)*4 lands on global (18,10), one
+            // px right of the bg rect = paleyellow). Expected matrix:
+            // paleyellow surround, white 'x' bg rect (10,6)-(18,22)
+            // ((p.x, p.y−ascent)..(p.x+Σwidth, +Dy(font r))), black glyph
+            // ink cells (10,10)-(18,18).
             for i in 0..(need / 4) {
-                let gx = 8 + (i as u32) % 14;
-                let gy = 4 + (i as u32) / 14;
-                // 'x' bg rect = (p.x, p.y−ascent)..(p.x+Σwidth, +Dy(font r))
-                // = (10,6)..(18,22); glyph cells advance 4+4 from x=10.
+                let (lx, ly) = ((i as u32) % 14, (i as u32) / 14);
+                let (gx, gy) = (8 + lx, 4 + ly);
                 let want = match (gx, gy) {
-                    (10..=17, 6..=21) if (10..=17).contains(&gy) => BLACK,
+                    (10..=17, 10..=17) => BLACK,
                     (10..=17, 6..=21) => WHITE,
                     _ => PALE,
                 };
                 if got[i * 4..i * 4 + 4] != want {
                     why = Some(format!(
-                        "pixel ({gx},{gy}) = {:02x?}, want {want:02x?}",
+                        "pixel local ({lx},{ly}) / global ({gx},{gy}) = {:02x?}, want {want:02x?}",
                         &got[i * 4..i * 4 + 4]
                     ));
                     break;
