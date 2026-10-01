@@ -46,8 +46,8 @@ use std::time::Duration;
 use p9draw_host::{HostEvent, ScreenHost};
 use p9draw_protocol::{DrawCmd, Point, Rect, Wsysmsg, decode, encode, parse_drawcmds};
 use p9draw_render::{
-    Chan, Image, compose_over, compose_over_masked, copy_rect, draw_tile_masked, fill, write_bytes,
-    write_bytes_compressed,
+    Chan, Image, compose_over, compose_over_masked, copy_rect, draw_tile_masked, fill, rgba_at,
+    write_bytes, write_bytes_compressed,
 };
 
 use crate::frameread::FrameAssembler;
@@ -671,6 +671,275 @@ fn composite_windows(scr: &mut Image, images: &HashMap<u32, Image>, windows: &[u
     }
 }
 
+// --- P9DRAW_APPLY_TRACE=1: pixel probes around apply ------------------------
+//
+// The live-session lens for "text reaches the wire but not the screen":
+// for every pixel-touching command, capture 3-4 probe pixels of the
+// target image BEFORE apply_one mutates the store (a 'd' consumes its
+// src, so targets are fixed up front), then log them next to the
+// after-values through the trace logger. String ops also log a dark-pixel
+// (ink) count over the string rect — the direct answer to "did glyphs
+// land on the window image".
+
+/// One command's probe plan, decided before it applies.
+struct ProbePlan {
+    /// wire op letter, for grepping the log
+    op: &'static str,
+    /// probe target image id (survives apply_one)
+    img: u32,
+    /// target role in the command: "dst" | "font"
+    what: &'static str,
+    /// the command's working rect, as the wire stated it
+    rect: Option<Rect>,
+    /// 3-4 probe points inside the target rect
+    pts: Vec<Point>,
+    /// optional second probe: (src id, point) — the 'l' atlas cell
+    src: Option<(u32, Point)>,
+    /// String/StringBg ink-scan rect on `img`
+    scan: Option<Rect>,
+}
+
+/// A captured probe: the plan plus the before-values.
+struct ApplyProbe {
+    plan: ProbePlan,
+    /// rgba hex per point, before the command applied
+    before: Vec<String>,
+    /// (src id, point, hex before)
+    src_before: Option<(u32, Point, String)>,
+}
+
+/// 3-4 probe points inside `r` (center + quarters); empty rect → none.
+fn probe_pts(r: Rect) -> Vec<Point> {
+    let (dx, dy) = (rect_dx(r), rect_dy(r));
+    if dx <= 0 || dy <= 0 {
+        return Vec::new();
+    }
+    let at = |fx: i32, fy: i32| Point {
+        x: (sx(r.min.x) + dx * fx / 4) as u32,
+        y: (sx(r.min.y) + dy * fy / 4) as u32,
+    };
+    vec![at(2, 2), at(1, 1), at(3, 3), at(2, 1)]
+}
+
+/// rgba word at an absolute point, hex `rrggbbaa`; "oob" outside.
+fn probe_hex(img: &Image, p: Point) -> String {
+    match rgba_at(img, sx(p.x), sx(p.y)) {
+        Some(v) => format!("{v:08x}"),
+        None => "oob".to_string(),
+    }
+}
+
+/// Ink census of `r` on `img`: dark pixels (luma < 128) over the rect
+/// signed-clamped to the image → (dark, total).
+fn dark_pixels(img: &Image, r: Rect) -> (u32, u32) {
+    let x0 = sx(r.min.x).max(sx(img.rect.min.x));
+    let y0 = sx(r.min.y).max(sx(img.rect.min.y));
+    let x1 = sx(r.max.x).min(sx(img.rect.max.x));
+    let y1 = sx(r.max.y).min(sx(img.rect.max.y));
+    if x0 >= x1 || y0 >= y1 {
+        return (0, 0);
+    }
+    let mut dark = 0u32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if let Some(v) = rgba_at(img, x, y) {
+                let luma = ((v >> 24 & 0xFF) + (v >> 16 & 0xFF) + (v >> 8 & 0xFF)) / 3;
+                if luma < 128 {
+                    dark += 1;
+                }
+            }
+        }
+    }
+    (dark, ((x1 - x0) * (y1 - y0)) as u32)
+}
+
+/// The String/StringBg ink rect on `dst`: (p.x, p.y−ascent)…
+/// (p.x+Σwidth, +Dy(font image)), signed-clamped to dst.rect ∩ clipr —
+/// exactly the rect draw_string paints the 'x' background into.
+#[allow(clippy::too_many_arguments)]
+fn string_probe_rect(
+    images: &HashMap<u32, Image>,
+    fonts: &HashMap<u32, FontData>,
+    dst_id: u32,
+    font_id: u32,
+    p: Point,
+    clip_r: Rect,
+    indices: &[u16],
+) -> Option<Rect> {
+    let fd = fonts.get(&font_id)?;
+    let fimg = images.get(&font_id)?;
+    let dst = images.get(&dst_id)?;
+    let sum_w: i32 = indices
+        .iter()
+        .map(|&ci| {
+            i32::from(
+                fd.fchars
+                    .get(usize::from(ci))
+                    .map(|fc| fc.width)
+                    .unwrap_or(0),
+            )
+        })
+        .sum();
+    let (bx, by) = (sx(p.x), sx(p.y) - i32::from(fd.ascent));
+    let bh = rect_dy(fimg.rect);
+    let x0 = bx.max(sx(dst.rect.min.x)).max(sx(clip_r.min.x));
+    let y0 = by.max(sx(dst.rect.min.y)).max(sx(clip_r.min.y));
+    let x1 = (bx + sum_w).min(sx(dst.rect.max.x)).min(sx(clip_r.max.x));
+    let y1 = (by + bh).min(sx(dst.rect.max.y)).min(sx(clip_r.max.y));
+    if x0 < x1 && y0 < y1 {
+        Some(Rect {
+            min: Point {
+                x: x0 as u32,
+                y: y0 as u32,
+            },
+            max: Point {
+                x: x1 as u32,
+                y: y1 as u32,
+            },
+        })
+    } else {
+        None
+    }
+}
+
+/// What a command touches (None = no probe for this op).
+fn probe_plan(
+    images: &HashMap<u32, Image>,
+    fonts: &HashMap<u32, FontData>,
+    cmd: &DrawCmd,
+) -> Option<ProbePlan> {
+    let (op, img, what, rect, pts, src, scan): (
+        &'static str,
+        u32,
+        &'static str,
+        Option<Rect>,
+        Vec<Point>,
+        Option<(u32, Point)>,
+        Option<Rect>,
+    ) = match cmd {
+        DrawCmd::Allocate { id, r, .. } => ("b", *id, "dst", Some(*r), probe_pts(*r), None, None),
+        DrawCmd::Draw { dst_id, r, .. } => ("d", *dst_id, "dst", Some(*r), probe_pts(*r), None, None),
+        DrawCmd::WritePixels { id, r, .. } => ("y", *id, "dst", Some(*r), probe_pts(*r), None, None),
+        DrawCmd::WriteCompressed { id, r, .. } => {
+            ("Y", *id, "dst", Some(*r), probe_pts(*r), None, None)
+        }
+        // 'l': probe the font-image cell across the copy AND the atlas
+        // source cell center — a silent no-op copy and a blank source
+        // look identical from the dst side alone.
+        DrawCmd::LoadFont { font_id, r, src_id, sp, .. } => {
+            let cp = Point {
+                x: (sx(sp.x) + rect_dx(*r) / 2) as u32,
+                y: (sx(sp.y) + rect_dy(*r) / 2) as u32,
+            };
+            ("l", *font_id, "font", Some(*r), probe_pts(*r), Some((*src_id, cp)), None)
+        }
+        DrawCmd::String { dst_id, font_id, p, clip_r, indices, .. } => {
+            let scan = string_probe_rect(images, fonts, *dst_id, *font_id, *p, *clip_r, indices);
+            let pts = match scan {
+                Some(r) => probe_pts(r),
+                None => vec![Point {
+                    x: (sx(clip_r.min.x) + rect_dx(*clip_r) / 2) as u32,
+                    y: (sx(clip_r.min.y) + rect_dy(*clip_r) / 2) as u32,
+                }],
+            };
+            ("s", *dst_id, "dst", Some(*clip_r), pts, None, scan)
+        }
+        DrawCmd::StringBg { dst_id, font_id, p, clip_r, indices, .. } => {
+            let scan = string_probe_rect(images, fonts, *dst_id, *font_id, *p, *clip_r, indices);
+            let pts = match scan {
+                Some(r) => probe_pts(r),
+                None => vec![Point {
+                    x: (sx(clip_r.min.x) + rect_dx(*clip_r) / 2) as u32,
+                    y: (sx(clip_r.min.y) + rect_dy(*clip_r) / 2) as u32,
+                }],
+            };
+            ("x", *dst_id, "dst", Some(*clip_r), pts, None, scan)
+        }
+        _ => return None,
+    };
+    Some(ProbePlan {
+        op,
+        img,
+        what,
+        rect,
+        pts,
+        src,
+        scan,
+    })
+}
+
+/// Capture a command's probe plan and its before-values.
+fn probe_capture(
+    images: &HashMap<u32, Image>,
+    fonts: &HashMap<u32, FontData>,
+    cmd: &DrawCmd,
+) -> Option<ApplyProbe> {
+    let plan = probe_plan(images, fonts, cmd)?;
+    let before = match images.get(&plan.img) {
+        Some(im) => plan.pts.iter().map(|p| probe_hex(im, *p)).collect(),
+        None => vec!["gone".to_string(); plan.pts.len()],
+    };
+    let src_before = plan.src.map(|(id, p)| {
+        let hex = images
+            .get(&id)
+            .map(|im| probe_hex(im, p))
+            .unwrap_or_else(|| "gone".to_string());
+        (id, p, hex)
+    });
+    Some(ApplyProbe {
+        plan,
+        before,
+        src_before,
+    })
+}
+
+/// The probe log line: op/img/rect, before/after hex, ink count, src cell.
+fn probe_finish(images: &HashMap<u32, Image>, pr: &ApplyProbe) -> String {
+    let plan = &pr.plan;
+    let rect = plan
+        .rect
+        .map(|r| format!("({},{})-({},{})", r.min.x, r.min.y, r.max.x, r.max.y))
+        .unwrap_or_else(|| "-".to_string());
+    let mut s = match images.get(&plan.img) {
+        None => format!(
+            "probe op={} img={}({}) rect={} before=[{}] after=[gone]",
+            plan.op,
+            plan.img,
+            plan.what,
+            rect,
+            pr.before.join(",")
+        ),
+        Some(im) => {
+            let after: Vec<String> = plan.pts.iter().map(|p| probe_hex(im, *p)).collect();
+            let mut s = format!(
+                "probe op={} img={}({}) rect={} before=[{}] after=[{}]",
+                plan.op,
+                plan.img,
+                plan.what,
+                rect,
+                pr.before.join(","),
+                after.join(",")
+            );
+            if let Some(r) = plan.scan {
+                let (dark, total) = dark_pixels(im, r);
+                s.push_str(&format!(
+                    " ink={dark}/{total} scan=({},{})-({},{})",
+                    r.min.x, r.min.y, r.max.x, r.max.y
+                ));
+            }
+            s
+        }
+    };
+    if let Some((id, p, hex)) = &pr.src_before {
+        let after = images
+            .get(id)
+            .map(|im| probe_hex(im, *p))
+            .unwrap_or_else(|| "gone".to_string());
+        s.push_str(&format!(" src={id}@({},{}) {hex}->{after}", p.x, p.y));
+    }
+    s
+}
+
 impl Screen {
     fn init(winsize: &str, label: &str, logger: &Logger) -> Result<Screen, String> {
         let env_ws = std::env::var("WINSIZE").ok();
@@ -732,14 +1001,30 @@ impl Screen {
     fn apply(&mut self, data: &[u8]) -> Result<bool, String> {
         let cmds = parse_drawcmds(data).map_err(|e| format!("bad draw command: {e}"))?;
         let mut dirty = false;
+        let apply_probe = trace::apply_on();
         for cmd in cmds {
             // P9DRAW_TRACE=1 (trace.rs): log each command just before it
             // applies; a failing one surfaces as the Twrdraw Rerror.
+            // P9DRAW_APPLY_TRACE=1 adds pixel probes around apply_one.
+            let pre = if apply_probe {
+                probe_capture(&self.images, &self.fonts, &cmd)
+            } else {
+                None
+            };
             trace::log_cmd(&cmd);
             let op = trace::op_letter(&cmd);
-            dirty |= self
-                .apply_one(cmd)
-                .map_err(|e| format!("draw op '{op}': {e}"))?;
+            match self.apply_one(cmd) {
+                Ok(d) => dirty |= d,
+                Err(e) => {
+                    if apply_probe {
+                        trace::log_apply(&format!("cmd op={op} APPLY-ERROR: {e}"));
+                    }
+                    return Err(format!("draw op '{op}': {e}"));
+                }
+            }
+            if let Some(pr) = pre {
+                trace::log_apply(&probe_finish(&self.images, &pr));
+            }
         }
         Ok(dirty)
     }
@@ -1147,7 +1432,10 @@ impl Screen {
                         }
                         send(&Wsysmsg::Rwrdraw { count: data.len() as u32 }, tag, out)?;
                     }
-                    Err(e) => send(&Wsysmsg::Rerror { error: e }, tag, out)?,
+                    Err(e) => {
+                        crate::trace::log_error(&e);
+                        send(&Wsysmsg::Rerror { error: e }, tag, out)?
+                    }
                 }
             }
             Wsysmsg::Trddraw { count } => {
@@ -1357,6 +1645,97 @@ pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
 mod tests {
     use super::*;
     use p9draw_protocol::{Point, Rect, Wsysmsg, decode, encode};
+
+    // --- P9DRAW_APPLY_TRACE probes ---------------------------------------
+
+    #[test]
+    fn probe_pts_stay_inside_their_rect() {
+        for r in [rect_of(1, 1), rect_of(9, 10), rect_of(1800, 15)] {
+            for p in probe_pts(r) {
+                assert!(p.x >= r.min.x && p.x < r.max.x, "{p:?} of {r:?}");
+                assert!(p.y >= r.min.y && p.y < r.max.y, "{p:?} of {r:?}");
+            }
+        }
+        let empty = Rect { min: Point { x: 5, y: 5 }, max: Point { x: 5, y: 5 } };
+        assert!(probe_pts(empty).is_empty());
+    }
+
+    #[test]
+    fn dark_pixels_counts_ink_across_channel_formats() {
+        // GREY1: a zeroed image is all black ink (0 → luma 0, alpha FF);
+        // one set bit turns its pixel white.
+        let mut g = grey1_image(1);
+        g.pixels[0] = 0b1000_0000;
+        assert_eq!(dark_pixels(&g, g.rect), (255, 256));
+        // XRGB32: a black pixel on white.
+        let mut w = white_canvas(2);
+        w.pixels[..3].fill(0);
+        assert_eq!(dark_pixels(&w, w.rect), (1, 96));
+        // A scan rect off the image counts nothing.
+        let off = Rect { min: Point { x: 100, y: 100 }, max: Point { x: 200, y: 200 } };
+        assert_eq!(dark_pixels(&w, off), (0, 0));
+    }
+
+    #[test]
+    fn string_probe_rect_clamps_to_dst_and_clip() {
+        let mut images = one_image(2); // font image: 16x16 GREY1
+        images.insert(3, white_canvas(3)); // dst: 12x8
+        let fonts = HashMap::from([(
+            2u32,
+            FontData {
+                ascent: 2,
+                fchars: vec![FChar { width: 4, ..FChar::default() }; 4],
+            },
+        )]);
+        // p=(0,4): ink rect y [2,18) x [0,8) → clipped to the 12x8 dst.
+        let r = string_probe_rect(
+            &images,
+            &fonts,
+            3,
+            2,
+            Point { x: 0, y: 4 },
+            rect_of(12, 8),
+            &[0, 0],
+        )
+        .unwrap();
+        assert_eq!((r.min.x, r.min.y, r.max.x, r.max.y), (0, 2, 8, 8));
+        // Empty intersection → None (probe pts fall back to clip center).
+        let far = Rect { min: Point { x: 100, y: 100 }, max: Point { x: 110, y: 110 } };
+        assert!(string_probe_rect(&images, &fonts, 3, 2, Point { x: 0, y: 4 }, far, &[0]).is_none());
+    }
+
+    #[test]
+    fn probe_finish_reports_before_after_and_ink() {
+        let mut images = HashMap::from([(7u32, white_canvas(7))]);
+        images.insert(8, grey1_image(8));
+        let fonts = HashMap::from([(
+            8u32,
+            FontData {
+                ascent: 2,
+                fchars: vec![FChar { width: 3, ..FChar::default() }; 8],
+            },
+        )]);
+        let cmd = DrawCmd::StringBg {
+            dst_id: 7,
+            src_id: 0,
+            font_id: 8,
+            p: Point { x: 1, y: 3 },
+            clip_r: rect_of(12, 8),
+            sp: Point { x: 0, y: 0 },
+            bg_id: 0,
+            bg_pt: Point { x: 0, y: 0 },
+            indices: vec![0, 1, 2],
+        };
+        let pr = probe_capture(&images, &fonts, &cmd).unwrap();
+        let line0 = probe_finish(&images, &pr);
+        assert!(line0.contains("op=x img=7(dst)"), "line: {line0}");
+        assert!(line0.contains("before=[ffffffff"), "line: {line0}");
+        assert!(line0.contains("ink=0/63"), "line: {line0}");
+        // Simulate the apply: blacken the whole dst → full ink count.
+        images.get_mut(&7).unwrap().pixels.fill(0);
+        let line1 = probe_finish(&images, &pr);
+        assert!(line1.contains("ink=63/63"), "line: {line1}");
+    }
 
     // Headless regression for the e2e text step (SPEC.md §6 'y'/'x'):
     // the stream keeps every command after 'y', and stringbg paints the

@@ -10,13 +10,24 @@ use p9draw_protocol::{DrawCmd, Rect};
 use crate::pump::Logger;
 
 static TRACE: OnceLock<Option<Arc<Logger>>> = OnceLock::new();
+/// `P9DRAW_APPLY_TRACE=1` — per-command pixel probes around apply
+/// (screen.rs probe_capture/probe_finish): target-image pixels before and
+/// after every command, plus an ink count for string ops. The probe
+/// lines ride the trace logger, so a probing session sets both vars.
+static APPLY: OnceLock<bool> = OnceLock::new();
 
-/// Read `P9DRAW_TRACE` once (`1` enables per-command tracing). Later
-/// calls are no-ops — the serve subcommand inits exactly once.
+/// Read `P9DRAW_TRACE` (per-command tracing) and `P9DRAW_APPLY_TRACE`
+/// (pixel probes) once. Later calls are no-ops — the serve subcommand
+/// inits exactly once.
 pub fn init_from_env(logger: Arc<Logger>) {
     let on = std::env::var("P9DRAW_TRACE")
         .map(|v| v.trim() == "1")
         .unwrap_or(false);
+    let _ = APPLY.set(
+        std::env::var("P9DRAW_APPLY_TRACE")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false),
+    );
     init(on, logger);
 }
 
@@ -24,12 +35,36 @@ fn init(on: bool, logger: Arc<Logger>) {
     let _ = TRACE.set(if on { Some(logger) } else { None });
 }
 
+/// The apply-probe gate (`P9DRAW_APPLY_TRACE=1`).
+pub fn apply_on() -> bool {
+    *APPLY.get().unwrap_or(&false)
+}
+
+/// One apply-probe line (screen.rs): op, target image, before/after
+/// pixel hex, ink count. Rides the trace logger; silent without it.
+pub fn log_apply(msg: &str) {
+    if let Some(Some(l)) = TRACE.get() {
+        l.log(msg);
+    }
+}
+
 /// Log one line per command from the Twrdraw stream. Called just before
 /// the command applies; a command that fails surfaces as the Twrdraw
 /// Rerror on top of its trace line. No-op unless the gate is on.
+/// One-off error line through the same logger (diagnostics for the live
+/// acme session; the Rerror body names the failing command).
+pub fn log_error(msg: &str) {
+    if let Some(Some(l)) = TRACE.get() {
+        l.log(&format!("serve error: {msg}"));
+    }
+}
+
 pub fn log_cmd(cmd: &DrawCmd) {
     if let Some(Some(logger)) = TRACE.get() {
-        logger.log(&line(cmd));
+        let mut l = line(cmd);
+        l.push_str("  | ");
+        l.push_str(&format!("{cmd:?}"));
+        logger.log(&l);
     }
 }
 
