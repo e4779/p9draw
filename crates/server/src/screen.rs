@@ -51,6 +51,7 @@ use p9draw_render::{
 use crate::frameread::FrameAssembler;
 use crate::pump::Logger;
 use crate::stats;
+use crate::trace;
 
 /// Last resort when neither the Tinit hint nor `$WINSIZE` yields a
 /// size (SPEC.md §2.4 winsize is a client hint; 900x700 is our fallback
@@ -459,6 +460,9 @@ impl Screen {
         let cmds = parse_drawcmds(data).map_err(|_| "bad draw command".to_string())?;
         let mut dirty = false;
         for cmd in cmds {
+            // P9DRAW_TRACE=1 (trace.rs): log each command just before it
+            // applies; a failing one surfaces as the Twrdraw Rerror.
+            trace::log_cmd(&cmd);
             match cmd {
                 DrawCmd::Allocate { id, screen_id, refresh: _, chan, repl, r, clip_r, value } => {
                     if id == 0 {

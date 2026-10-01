@@ -24,6 +24,7 @@ mod pump;
 mod screen;
 mod serve;
 mod stats;
+mod trace;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -102,6 +103,9 @@ fn cmd_serve(args: &[String]) -> Result<ExitCode, String> {
     // here on exit so short sessions leave evidence too.
     stats::init_from_env();
     stats::spawn_reporter(Arc::clone(&logger));
+    // P9DRAW_TRACE=1 (trace.rs): one log line per applied draw command —
+    // the live diagnostic for the next acme session.
+    trace::init_from_env(Arc::clone(&logger));
     screen::serve_stdio(Arc::clone(&logger)).map_err(|e| format!("serve: {e}"))?;
     stats::log_final(&logger);
     Ok(ExitCode::SUCCESS)
