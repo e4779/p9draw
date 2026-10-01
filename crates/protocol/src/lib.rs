@@ -209,7 +209,9 @@ mod tests {
         vec![
             (1, Wsysmsg::Rerror { error: "bad draw command".into() }),
             (2, Wsysmsg::Trdmouse),
-            (3, Wsysmsg::Rrdmouse { x: 100, y: 200, buttons: 4, msec: 12_345, resized: 1 }),
+            // msec byte 1 doubles as `resized` on the wire, so a round-trip
+            // sample carries the flag in place: 78_137 = 0x0001_3039.
+            (3, Wsysmsg::Rrdmouse { x: 100, y: 200, buttons: 4, msec: 78_137, resized: 1 }),
             (4, Wsysmsg::Tmoveto { x: 5, y: 9 }),
             (5, Wsysmsg::Rmoveto),
             (6, Wsysmsg::Tcursor { cursor: sample_cursor() }),
@@ -297,12 +299,14 @@ mod tests {
             "00000017040300000064000000c800000001000004d200",
         );
         // Resize has no push message: it rides resized=1 in the next
-        // Rrdmouse (SPEC.md §5), repeating the last event.
-        let golden = format!("000000170403{}01", "0".repeat(32));
+        // Rrdmouse (SPEC.md §5), repeating the last event. The flag
+        // overwrites msec byte 1 (drawfcall.c p[19]): the decoded msec is
+        // the raw wire group 0x0001_0000; frame byte 22 is an unwritten
+        // pad (0x20 stale garbage in real devdraw captures).
         assert_golden(
-            &Wsysmsg::Rrdmouse { x: 0, y: 0, buttons: 0, msec: 0, resized: 1 },
+            &Wsysmsg::Rrdmouse { x: 0, y: 0, buttons: 0, msec: 0x0001_0000, resized: 1 },
             4,
-            &golden,
+            "0000001704030000000000000000000000000001000000",
         );
     }
 

@@ -66,8 +66,15 @@ pub fn encode_into(msg: &Wsysmsg, tag: u8, buf: &mut Vec<u8>) {
             put_u32(buf, *x);
             put_u32(buf, *y);
             put_u32(buf, *buttons);
-            put_u32(buf, *msec);
-            put_u8(buf, *resized);
+            // drawfcall.c convW2M: `PUT(p+18, msec); p[19] = resized` — the
+            // flag overwrites byte 1 of the msec group, so msec bits
+            // 16..24 are not representable on the wire. Byte 22 is counted
+            // by sizeW2M but written by nobody (devdraw leaves stale
+            // buffer garbage no receiver reads); we pad 0.
+            let mut m = msec.to_be_bytes();
+            m[1] = *resized;
+            buf.extend_from_slice(&m);
+            buf.push(0);
         }
         Wsysmsg::Tmoveto { x, y } => {
             put_u32(buf, *x);

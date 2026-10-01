@@ -128,7 +128,8 @@ pub struct Cursor2 {
 ///
 /// `Rrddraw`/`Twrdraw` carry the inner little-endian draw stream as opaque
 /// bytes; parsing it is out of scope for this crate (ARCHITECTURE.md,
-/// future `draw.rs`). `Rrdmouse.resized` is kept as the raw u8 flag byte.
+/// future `draw.rs`). `Rrdmouse.resized` shares byte 1 of the `msec` group
+/// on the wire (drawfcall.c p[19]; SPEC.md §4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wsysmsg {
     /// Type 1. Error reply to any request.
@@ -137,7 +138,9 @@ pub enum Wsysmsg {
     },
     /// Type 2. Empty request.
     Trdmouse,
-    /// Type 3, 23-byte frame: `x y buttons msec` (u32 BE) + `resized` flag.
+    /// Type 3, 23-byte frame: `x y buttons msec` (u32 BE); the `resized`
+    /// flag rides byte 1 of the msec group (frame offset 19), frame byte
+    /// 22 is an unwritten pad.
     Rrdmouse {
         x: u32,
         y: u32,

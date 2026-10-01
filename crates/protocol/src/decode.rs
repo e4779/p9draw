@@ -37,13 +37,23 @@ fn parse_payload(ty: u8, r: &mut Reader<'_>) -> Result<Wsysmsg, ProtocolError> {
     let msg = match ty {
         RERROR => Wsysmsg::Rerror { error: r.string(ty)? },
         TRDMOUSE => Wsysmsg::Trdmouse,
-        RRDMOUSE => Wsysmsg::Rrdmouse {
-            x: r.u32(ty)?,
-            y: r.u32(ty)?,
-            buttons: r.u32(ty)?,
-            msec: r.u32(ty)?,
-            resized: r.u8(ty)?,
-        },
+        RRDMOUSE => {
+            let x = r.u32(ty)?;
+            let y = r.u32(ty)?;
+            let buttons = r.u32(ty)?;
+            let msec = r.u32(ty)?;
+            // Frame byte 22 exists (sizeW2M counts it) but devdraw never
+            // writes it — stale buffer garbage no receiver reads; resized
+            // rides msec byte 1 (drawfcall.c p[19], SPEC.md §4).
+            let _pad = r.u8(ty)?;
+            Wsysmsg::Rrdmouse {
+                x,
+                y,
+                buttons,
+                msec,
+                resized: (msec >> 16) as u8,
+            }
+        }
         TMOVETO => Wsysmsg::Tmoveto {
             x: r.u32(ty)?,
             y: r.u32(ty)?,
