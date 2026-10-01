@@ -282,6 +282,66 @@ pub fn set_grey(img: &mut Image, x: i32, y: i32, v: u8) {
     *byte = (*byte & !((maxv as u8) << shift)) | (raw << shift);
 }
 
+/// Read one pixel of `img` at absolute (x, y) as a canonical plan9 RGBA
+/// word (`r<<24|g<<16|b<<8|a`) — memdraw `_imgtorgba`
+/// (libmemdraw/draw.c:2014): alpha defaults to 0xFF and is only narrowed
+/// by an explicit CAlpha channel; CGREY sets r=g=b (not alpha), which is
+/// why acme's GREY1 black color tile paints opaque ink. `None` where the
+/// pixel has no rendering: a zero-depth stub image, a point outside the
+/// rect, or a colormap channel (CMap8 — v0 has no colormaps). Sub-byte
+/// channels share the packed MSB-first row layout [grey_at](fn.grey_at)
+/// reads; multi-channel descs are expected uniform-depth (everything the
+/// traffic carries: GREY1/8, RGB24, the 32-bit families).
+pub fn rgba_at(img: &Image, x: i32, y: i32) -> Option<u32> {
+    if img.pixels.is_empty() || !contains(img.rect, x, y) {
+        return None;
+    }
+    let depth = img.chan.depth() as usize;
+    let lx = (x - sx(img.rect.min.x)) as usize;
+    let ly = (y - sx(img.rect.min.y)) as usize;
+    let word = if depth >= 8 {
+        let bytes = depth / 8;
+        let off = ly * img.bpl() + lx * bytes;
+        let mut w = 0u32;
+        for i in 0..bytes {
+            w |= u32::from(img.pixels[off + i]) << (8 * i);
+        }
+        w
+    } else {
+        let stride = (dx(img.rect) as usize * depth + 7) / 8;
+        let bit = (ly * stride + lx * depth / 8) * 8 + lx * depth % 8;
+        let maxv = ((1u32 << depth) - 1) as u32;
+        (u32::from(img.pixels[bit / 8]) >> (8 - depth - bit % 8)) & maxv
+    };
+    let mut r = 0u32;
+    let mut g = 0u32;
+    let mut b = 0u32;
+    let mut a = 0xFFu32;
+    let mut shift = 0u32;
+    let mut cc = img.chan.0;
+    while cc != 0 {
+        let nb = cc & 0x0F;
+        let code = (cc >> 4) & 0x0F;
+        cc >>= 8;
+        if nb == 0 {
+            continue;
+        }
+        let maxv = (1u32 << nb) - 1;
+        let v8 = ((word >> shift) & maxv) * 255 / maxv;
+        shift += nb;
+        match code {
+            0 => r = v8,                      // CRed
+            1 => g = v8,                      // CGreen
+            2 => b = v8,                      // CBlue
+            3 => { r = v8; g = v8; b = v8; }  // CGrey
+            4 => a = v8,                      // CAlpha
+            5 => return None,                 // CMap: no colormaps in v0
+            _ => {}                           // CIgnore (x): dropped
+        }
+    }
+    Some((r << 24) | (g << 16) | (b << 8) | a)
+}
+
 /// 'd' mask channel (SPEC.md §6 maskid/maskpt): per-pixel alpha from a
 /// single-channel grey image — acme's allocimagemix qmask is GREY8 and
 /// its font cache images are GREY1..GREY8. Absent masks and any other
@@ -433,8 +493,11 @@ pub fn copy_rect(dst: &mut Image, dst_rect: Rect, src: &Image, src_pt: Point) {
 
 /// Core v0 blit: walk clipped dst pixels, map each to source coordinates
 /// via `src_pt` (source pixel at `dst_rect.min`), optionally wrap-tile,
-/// drop out-of-window pixels, copy per pixel (or grey-mask blend). No-op
-/// when channel depths differ (TODO(p9draw): channel conversion).
+/// drop out-of-window pixels, copy per pixel (or grey-mask blend). When
+/// src and dst depths differ, each src pixel converts through
+/// [rgba_at] → `dst.chan.rgbatoimg` (memdraw `_imgtorgba`/`_rgbatoimg`):
+/// acme's GREY1 color tiles land on x8r8g8b8 windows instead of the draw
+/// silently vanishing — the 's'/'x' glyph path (2026-10 live capture).
 fn blit(
     dst: &mut Image,
     dst_rect: Rect,
@@ -445,9 +508,10 @@ fn blit(
     mask: Option<(&Image, Point)>,
 ) {
     let mut clip = isect(isect(dst.rect, dst.clipr), dst_rect);
-    if is_empty(clip) || dst.bpp() != src.bpp() {
+    if is_empty(clip) {
         return;
     }
+    let convert = dst.bpp() != src.bpp();
     // Only single-channel grey masks blend (any depth — GREY1 font cells
     // as well as GREY8); everything else draws opaque.
     let mask = match mask {
@@ -502,15 +566,24 @@ fn blit(
             }
             let m = mask.alpha_at(px, py, (anchor_x, anchor_y));
             let Some(m) = m else { continue }; // transparent mask pixel
+            // Different depths: convert the src pixel into dst's chan
+            // first (see fn doc); a colormap pixel has no rendering and
+            // is skipped.
+            let conv: [u8; 4] = if convert {
+                let Some(rgba) = rgba_at(src, qx, qy) else { continue };
+                dst.chan.rgbatoimg(rgba).to_le_bytes()
+            } else {
+                [0; 4]
+            };
             let so = (qy - sminy) as usize * src_bpl + (qx - sminx) as usize * bpp;
             let doff = (py - dst_min_y) as usize * dst_bpl + (px - dst_min_x) as usize * bpp;
             if m == 255 {
                 for i in 0..bpp {
-                    dst.pixels[doff + i] = src.pixels[so + i];
+                    dst.pixels[doff + i] = if convert { conv[i] } else { src.pixels[so + i] };
                 }
             } else {
                 for i in 0..bpp {
-                    let s = u32::from(src.pixels[so + i]);
+                    let s = u32::from(if convert { conv[i] } else { src.pixels[so + i] });
                     let d = u32::from(dst.pixels[doff + i]);
                     dst.pixels[doff + i] = ((s * u32::from(m) + d * u32::from(255 - m) + 127) / 255)
                         as u8;
@@ -1201,6 +1274,85 @@ mod tests {
         let mut dst = grey1(&[0x00, 0x00]);
         copy_rect(&mut dst, rect(0, 0, 8, 2), &tile, Point { x: 4, y: 0 });
         assert_eq!(dst.pixels, vec![0x0F, 0x0F]);
+    }
+
+    /// GREY1 test image via the packed-row constructor (Image::new
+    /// rejects sub-byte depths, exactly like the server's alloc path).
+    fn with_packed(id: u32, r: Rect, chan: Chan, repl: bool) -> Image {
+        let len = dy(r) as usize * ((dx(r) as usize * chan.depth() as usize + 7) / 8);
+        Image::with_packed(id, r, r, chan, repl, vec![0u8; len]).unwrap()
+    }
+
+    #[test]
+    fn rgba_at_reads_grey_rgb_and_defaults_alpha() {
+        // GREY1 packed MSB-first: value 1 → white, 0 → black; grey sets
+        // rgb but leaves alpha at the default (memdraw _imgtorgba).
+        let mut g1 = with_packed(1, rect(0, 0, 2, 1), Chan::GREY1, false);
+        set_grey(&mut g1, 0, 0, 255); // white (normalized 0..255)
+        assert_eq!(rgba_at(&g1, 0, 0), Some(0xFFFF_FFFF));
+        assert_eq!(rgba_at(&g1, 1, 0), Some(0x0000_00FF));
+        // GREY8 mid value expands by scaling, alpha opaque.
+        let mut g8 = Image::new(2, rect(0, 0, 1, 1), Chan::GREY8).unwrap();
+        set_grey(&mut g8, 0, 0, 0x80);
+        assert_eq!(rgba_at(&g8, 0, 0), Some(0x8080_80FF));
+        // x8r8g8b8: the ignored x byte never masquerades as alpha.
+        let mut x32 = Image::new(3, rect(0, 0, 1, 1), Chan::XRGB32).unwrap();
+        let xr = x32.rect;
+        // paleyellow pixel word (chan.rs: rgbatoimg(0xFFFF_AAFF))
+        fill(&mut x32, xr, 0x00FF_FFAA); // b g r x = AA FF FF 00
+        assert_eq!(rgba_at(&x32, 0, 0), Some(0xFFFF_AAFF));
+        // r8g8b8 rounds out to opaque too.
+        let mut r24 = Image::new(4, rect(0, 0, 1, 1), Chan::RGB24).unwrap();
+        let rr = r24.rect;
+        fill(&mut r24, rr, 0xFFFF_AA); // b g r = AA FF FF (24-bit word)
+        assert_eq!(rgba_at(&r24, 0, 0), Some(0xFFFF_AAFF));
+        // Zero-depth stubs and off-rect points have no rendering.
+        let stub = Image {
+            id: 9,
+            rect: rect(0, 0, 2, 2),
+            clipr: rect(0, 0, 2, 2),
+            chan: Chan(0),
+            repl: false,
+            pixels: Vec::new(),
+        };
+        assert_eq!(rgba_at(&stub, 0, 0), None);
+        assert_eq!(rgba_at(&g1, 5, 5), None);
+    }
+
+    #[test]
+    fn blit_converts_grey_color_tiles_onto_xrgb32() {
+        // acme's live text path: a GREY1 1×1 repl ink tile drawn onto an
+        // x8r8g8b8 window — depths 1 vs 32. The old blit dropped these
+        // draws on sight (the missing-text symptom); now each pixel goes
+        // through rgba_at → rgbatoimg like memdraw.
+        let mut dst = Image::new(0, rect(0, 0, 4, 2), Chan::XRGB32).unwrap();
+        let dr = dst.rect;
+        fill(&mut dst, dr, 0x00FF_FFFF); // white, bytes FF FF FF 00
+        let mut repl_ink = with_packed(1, rect(0, 0, 1, 1), Chan::GREY1, true); // pixel 0 = black
+        let ink = repl_ink.clone();
+        draw_tile_masked(&mut dst, rect(1, 0, 4, 1), &repl_ink, Point { x: 0, y: 0 }, None);
+        assert_eq!(pixel_at(&dst, 0, 0), 0x00FF_FFFF, "outside the draw stays white");
+        assert_eq!(pixel_at(&dst, 1, 0), 0x0000_0000, "grey ink converts to black xrgb32");
+        assert_eq!(pixel_at(&dst, 2, 0), 0x0000_0000);
+        assert_eq!(pixel_at(&dst, 3, 0), 0x0000_0000);
+        // Masked run: a GREY1 mask limits the converted ink to its set bits.
+        let mut dst2 = Image::new(2, rect(0, 0, 4, 1), Chan::XRGB32).unwrap();
+        let d2 = dst2.rect;
+        fill(&mut dst2, d2, 0x00FF_FFFF);
+        let mut mask = with_packed(3, rect(0, 0, 4, 1), Chan::GREY1, false);
+        set_grey(&mut mask, 0, 0, 255);
+        set_grey(&mut mask, 2, 0, 255);
+        draw_tile_masked(
+            &mut dst2,
+            rect(0, 0, 4, 1),
+            &repl_ink,
+            Point { x: 0, y: 0 },
+            Some((&mask, Point { x: 0, y: 0 })),
+        );
+        assert_eq!(pixel_at(&dst2, 0, 0), 0x0000_0000, "masked-in pixel black");
+        assert_eq!(pixel_at(&dst2, 1, 0), 0x00FF_FFFF, "masked-out pixel white");
+        assert_eq!(pixel_at(&dst2, 2, 0), 0x0000_0000);
+        assert_eq!(pixel_at(&dst2, 3, 0), 0x00FF_FFFF);
     }
 
     #[test]

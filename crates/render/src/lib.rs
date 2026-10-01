@@ -1,7 +1,8 @@
 //! p9draw-render — software raster for plan9port images (SPEC.md §6-7).
 //!
 //! v0 scope:
-//! - byte-aligned channels only (depth % 8 == 0; GREY1/2/4 rejected);
+//! - byte-aligned channels at full speed; sub-byte GREY1/2/4 via packed
+//!   rows ([Image::with_packed], `rgba_at`/`set_grey` bit access);
 //! - `fill` honors the image clip rectangle;
 //! - `compose_over` is an opaque copy — alpha is ignored (TODO);
 //! - `draw_tile`/`compose_over_masked` implement the 'd'-command
@@ -23,7 +24,7 @@ pub mod image;
 pub use chan::{Chan, ChanError};
 pub use image::{
     compose_over, compose_over_masked, copy_rect, draw_tile, draw_tile_masked, fill, grey_at,
-    set_grey, write_bytes, write_bytes_compressed, Image, RenderError,
+    rgba_at, set_grey, write_bytes, write_bytes_compressed, Image, RenderError,
 };
 
 /// Wire geometry shared with the codec: raster and protocol code use the
