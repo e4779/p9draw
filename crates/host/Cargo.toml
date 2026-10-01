@@ -1,0 +1,11 @@
+[package]
+name = "p9draw-host"
+version = "0.1.0"
+edition.workspace = true
+description = "Local window host for p9draw: winit 0.30 poll-style event pump + softbuffer 0.4 x8r8g8b8 surface"
+
+[dependencies]
+# Task-scoped deps only. Default features (X11 included on Linux); the
+# event loop stays poll-style (pump_events) so the owner keeps the thread.
+winit = "0.30"
+softbuffer = "0.4"

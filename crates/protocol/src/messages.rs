@@ -88,14 +88,14 @@ pub const CURSOR2_FRAME: usize = 343;
 
 /// Point on the wire: two u32 BE halves. The C `Point` is signed; negative
 /// values wrap on the wire and are preserved bit-exact as u32.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Point {
     pub x: u32,
     pub y: u32,
 }
 
 /// Rectangle on the wire: `min.x min.y max.x max.y`, 4×u32 BE (16 bytes).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rect {
     pub min: Point,
     pub max: Point,

@@ -1,0 +1,12 @@
+[package]
+name = "p9draw-render"
+version = "0.1.0"
+edition.workspace = true
+description = "Software raster for plan9port images: channel descriptors, fill, opaque compose, repeat tiles (SPEC.md §6-7)"
+
+[dependencies]
+p9draw-protocol = { path = "../protocol" }
+
+# std only by design: no external crates. p9draw-protocol is workspace-internal
+# and supplies the wire geometry (Rect/Point) so raster and codec share one
+# vocabulary, per the crate task.
