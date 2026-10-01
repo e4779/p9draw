@@ -62,7 +62,7 @@ fn run() -> i32 {
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
     if !has_x {
-        for step in ["init", "alloc", "fill", "text", "readback", "mouse"] {
+        for step in ["init", "alloc", "fill", "text", "readback", "mouse", "window", "window-readback"] {
             report(step, "SKIP", "no X display ($DISPLAY is empty)");
         }
         return 0;
@@ -353,6 +353,116 @@ fn run() -> i32 {
                 failed = true;
             }
         }
+    }
+
+    // --- 6. window: 'b' screen_id != 0, 'x' into it, readback of image 0 --
+    // The live-acme shape (live-acme-interactive capture): ONE full-screen
+    // window, every string op into it, GREY1 1×1 repl ink tile. This proves
+    // both layers the live run was missing: the window composite at flush
+    // (window pixels on image 0) and the grey→x8r8g8b8 glyph conversion —
+    // pre-fix the glyph cells read back white (the missing-text symptom).
+    if failed {
+        report("window", "SKIP", "a previous step failed");
+        report("window-readback", "SKIP", "a previous step failed");
+    } else {
+        let wtext = encode_drawcmds(&[
+            DrawCmd::Allocate {
+                id: 6,
+                screen_id: 1, // window on the 'A' screen; nonzero registers
+                refresh: 0,
+                chan: Chan::XRGB32.0,
+                repl: 0,
+                r: full,
+                clip_r: full,
+                value: 0xFFFF_FFFF, // born white, like acme's window
+            },
+            DrawCmd::Allocate {
+                id: 7,
+                screen_id: 0,
+                refresh: 0,
+                chan: Chan::GREY1.0,
+                repl: 1,
+                r: rect(0, 0, 1, 1),
+                clip_r: rect(0, 0, 1, 1),
+                value: 0x0000_00FF, // DBlack — display->black is GREY1
+            },
+            DrawCmd::StringBg {
+                dst_id: 6,
+                src_id: 7,
+                font_id: 2,
+                p: Point { x: 20, y: 30 },
+                clip_r: full,
+                sp: Point { x: 0, y: 0 },
+                bg_id: 5,
+                bg_pt: Point { x: 0, y: 0 },
+                indices: vec![0, 1],
+            },
+            DrawCmd::Flush,
+        ]);
+        let _ = step_rpc(&mut srv, "window", 9, &Wsysmsg::Twrdraw { data: wtext }, &mut failed);
+        // Readback on IMAGE 0 (the screen): the window composited over it
+        // at flush. bg rect (20,20)-(28,36), glyph cells (20,24)-(28,32);
+        // everything else is the window's white fill.
+        let region = rect(16, 18, 32, 38); // corners → 16×20
+        let need = (16 * 20 * 4) as usize;
+        let r = encode_drawcmds(&[DrawCmd::ReadPixels { id: 0, r: region }]);
+        let mut got = Vec::with_capacity(need);
+        let mut wfailed = failed;
+        if step_rpc(&mut srv, "window-readback-r", 10, &Wsysmsg::Twrdraw { data: r }, &mut wfailed).is_some() {
+            while got.len() < need {
+                match srv.rpc(11, &Wsysmsg::Trddraw { count: (need - got.len()) as u32 }) {
+                    Ok((_, Wsysmsg::Rrddraw { data })) => got.extend_from_slice(&data),
+                    Ok((_, Wsysmsg::Rerror { error })) => {
+                        report("window-readback", "FAILED", &format!("Rerror: {error}"));
+                        wfailed = true;
+                        break;
+                    }
+                    Ok((t, m)) => {
+                        report("window-readback", "FAILED", &format!("tag={t} unexpected {m:?}"));
+                        wfailed = true;
+                        break;
+                    }
+                    Err(e) => {
+                        report("window-readback", "FAILED", &e);
+                        wfailed = true;
+                        break;
+                    }
+                }
+            }
+            if !wfailed {
+                const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
+                const BLACK: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+                let mut why: Option<String> = None;
+                if got.len() != need {
+                    why = Some(format!("got {} bytes, want {need}", got.len()));
+                }
+                // Region-local index i = ly*16 + lx; global = (16+lx, 18+ly).
+                // Black exactly on the two glyph cells, white elsewhere
+                // (bg rect and the window fill are both white).
+                for i in 0..(need / 4) {
+                    let (lx, ly) = ((i as u32) % 16, (i as u32) / 16);
+                    let (gx, gy) = (16 + lx, 18 + ly);
+                    let want = if (20..28).contains(&gx) && (24..32).contains(&gy) { BLACK } else { WHITE };
+                    if got[i * 4..i * 4 + 4] != want {
+                        why = Some(format!(
+                            "pixel local ({lx},{ly}) / global ({gx},{gy}) = {:02x?}, want {want:02x?}",
+                            &got[i * 4..i * 4 + 4]
+                        ));
+                        break;
+                    }
+                }
+                wfailed = why.is_some();
+                match &why {
+                    Some(w) => report("window-readback", "FAILED", w),
+                    None => report(
+                        "window-readback",
+                        "PASSED",
+                        "window composite on image 0: GREY1 glyph cells black, bg rect white",
+                    ),
+                }
+            }
+        }
+        failed |= wfailed;
     }
 
     // Drop stdin: EOF is the session lifetime (serve exits 0 on it).
