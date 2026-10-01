@@ -203,10 +203,9 @@ fn rect_of(w: u32, h: u32) -> Rect {
 
 /// `'b'` allocimage: build the store image, pre-filled with `value` (the
 /// allocimage fill), clipped to `clip_r`. Sub-byte channels (GREY1/2/4 —
-/// acme's masks) and zero-depth descriptors become geometry-only stubs:
-/// the v0 raster is byte-aligned only (render::Image::new rejects them),
-/// and mask pixels are ignored by 'd' anyway, so a stub keeps acme's init
-/// alive instead of Rerror-ing the whole Twrdraw.
+/// acme's masks and font glyph images) store packed rows; zero-depth
+/// descriptors stay geometry-only stubs so an exotic alloc keeps acme's
+/// init alive instead of Rerror-ing the whole Twrdraw.
 fn make_image(
     id: u32,
     r: Rect,
@@ -654,6 +653,19 @@ pub struct Screen {
     fonts: HashMap<u32, FontData>,
 }
 
+/// v0 composite: windows over the screen image in creation order, each
+/// at its own `rect` (later windows on top — the v0 stand-in for
+/// devdraw's refresh machinery, SPEC.md §6 'b' screen_id). Free fn so
+/// the composite is testable without a display; [`Screen::present`]
+/// calls it on every dirty Twrdraw ('d'/'x'/'y'/... and the 'v' flush).
+fn composite_windows(scr: &mut Image, images: &HashMap<u32, Image>, windows: &[u32]) {
+    for id in windows {
+        if let Some(w) = images.get(id) {
+            compose_over(scr, w.rect, w, w.rect);
+        }
+    }
+}
+
 impl Screen {
     fn init(winsize: &str, label: &str, logger: &Logger) -> Result<Screen, String> {
         let env_ws = std::env::var("WINSIZE").ok();
@@ -973,11 +985,7 @@ impl Screen {
             Some(s) => s,
             None => return,
         };
-        for id in &self.windows {
-            if let Some(w) = self.images.get(id) {
-                compose_over(&mut scr, w.rect, w, w.rect);
-            }
-        }
+        composite_windows(&mut scr, &self.images, &self.windows);
         {
             let surface = self.host.surface();
             let n = surface.len().min(scr.pixels.len());
@@ -1398,6 +1406,87 @@ mod tests {
         assert_eq!(at(14, 10), black[..4], "glyph 1 cell black (MSB-first bits)");
         assert_eq!(at(17, 17), black[..4]);
         assert_eq!(at(8, 4), pale0, "surround stays paleyellow");
+    }
+
+    #[test]
+    fn window_composite_lands_grey_glyphs_on_screen() {
+        // The live-acme image set (live_acme_window_semantics pin): ONE
+        // full-screen window ('b' screen_id != 0), every 'x' into it, a
+        // GREY1 1×1 repl ink tile. The glyphs must reach image 0 at flush
+        // (composite_windows in present) AND come out black — the grey→
+        // x8r8g8b8 blit conversion; before it they never rendered at all
+        // (the missing-text symptom).
+        let rect = |x: u32, y: u32, w: u32, h: u32| Rect {
+            min: Point { x, y },
+            max: Point { x: x + w, y: y + h },
+        };
+        let full = rect(0, 0, 120, 90);
+        let font_rect = rect(0, 0, 16, 16);
+        let mut glyph_rows = vec![0u8; 32];
+        for row in 4..12 {
+            glyph_rows[row * 2] = 0xF0;
+            glyph_rows[row * 2 + 1] = 0xF0; // x8..11 inked (MSB-first GREY1)
+        }
+        let mut images = HashMap::new();
+        images.insert(0, make_image(0, full, full, Chan::XRGB32, false, 0xFFFF_AAFF).unwrap());
+        images.insert(2, make_image(2, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        images.insert(3, make_image(3, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        write_bytes(images.get_mut(&3).unwrap(), font_rect, &glyph_rows).unwrap();
+        images
+            .insert(5, make_image(5, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::XRGB32, true, 0xFFFF_FFFF).unwrap());
+        // id 7: the GREY1 ink tile — depths 1 → 32 need the conversion.
+        images
+            .insert(7, make_image(7, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::GREY1, true, 0x0000_00FF).unwrap());
+        // id 6: the window, born white ('b' screen_id != 0 fill).
+        images.insert(6, make_image(6, full, full, Chan::XRGB32, false, 0xFFFF_FFFF).unwrap());
+        let windows = vec![6u32];
+        let mut fonts = HashMap::new();
+        init_font(&images, &windows, &mut fonts, 2, 2, 10).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 0, rect(0, 4, 4, 8), Point { x: 0, y: 4 }, 0, 4).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 1, rect(8, 4, 4, 8), Point { x: 8, y: 4 }, 0, 4).unwrap();
+        // 'x' into the WINDOW image 6 (not 0!) — the live-acme stream.
+        draw_string(
+            &mut images,
+            &fonts,
+            6,
+            7,
+            2,
+            Point { x: 10, y: 16 },
+            full,
+            Point { x: 0, y: 0 },
+            Some((5, Point { x: 0, y: 0 })),
+            &[0, 1],
+        )
+        .unwrap();
+        // Flush: composite windows over image 0, exactly like present().
+        let mut scr = images.remove(&0).unwrap();
+        composite_windows(&mut scr, &images, &windows);
+        let at = |scr: &Image, x: u32, y: u32| {
+            let bpl = 120usize * 4;
+            let o = y as usize * bpl + x as usize * 4;
+            [scr.pixels[o], scr.pixels[o + 1], scr.pixels[o + 2], scr.pixels[o + 3]]
+        };
+        let white = images[&5].pixels.clone();
+        let black = [0u8, 0, 0, 0]; // GREY1 pixel 0 → x8r8g8b8 black
+        // Background rect (10,6)-(18,22) white; glyph cells (10,10)-(18,18)
+        // black through the conversion; the window's white fill covers the
+        // paleyellow screen everywhere else.
+        assert_eq!(at(&scr, 10, 6), white[..4], "bg rect corner white on screen");
+        assert_eq!(at(&scr, 17, 21), white[..4], "bg rect last row white on screen");
+        assert_eq!(at(&scr, 10, 10), black, "glyph cell black on screen (grey ink converted)");
+        assert_eq!(at(&scr, 14, 10), black, "second glyph cell black on screen");
+        assert_eq!(at(&scr, 8, 4), white[..4], "window fill composites over the screen");
+        assert_eq!(at(&scr, 119, 89), white[..4], "window fill reaches the far corner");
+        // Stacking: creation order is bottom-up — a later window paints
+        // over the first where they overlap, not outside it.
+        images.insert(0, make_image(0, full, full, Chan::XRGB32, false, 0xFFFF_AAFF).unwrap());
+        images
+            .insert(8, make_image(8, rect(60, 45, 60, 45), rect(60, 45, 60, 45), Chan::XRGB32, false, 0xFFFF_AAFF).unwrap());
+        let windows2 = vec![6, 8];
+        let mut scr = images.remove(&0).unwrap();
+        composite_windows(&mut scr, &images, &windows2);
+        assert_eq!(at(&scr, 90, 60), [0xAA, 0xFF, 0xFF, 0x00], "later window on top");
+        assert_eq!(at(&scr, 10, 10), black, "earlier window still visible outside the later one");
     }
 
     // --- winsize (SPEC.md §2.4 parsewinsize) ------------------------------
