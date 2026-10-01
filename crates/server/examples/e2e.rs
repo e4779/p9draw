@@ -32,7 +32,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
-use p9draw_protocol::{decode, encode, Point, Rect, Wsysmsg};
+use p9draw_protocol::{DrawCmd, decode, encode, encode_drawcmds, Point, Rect, Wsysmsg};
 use p9draw_render::Chan;
 
 /// Client winsize hint for the child's window — small on purpose, the
@@ -113,40 +113,45 @@ fn run() -> i32 {
     }
 
     // --- 2. alloc: Twrdraw 'b' — image 1 born paleyellow -------------------
-    // 'b' allocimage, 51 bytes (SPEC.md §6): id@1, screen_id@5 (u16),
-    // refresh@9, chan@10, repl@14, r@15, clipR@31, value@47 — LE.
-    let mut b = Vec::with_capacity(51);
-    b.push(b'b');
-    b.extend_from_slice(&1u32.to_le_bytes());
-    b.extend_from_slice(&0u16.to_le_bytes()); // screen_id = 0: plain image
-    b.push(0); // refresh = Refbackup
-    b.extend_from_slice(&Chan::XRGB32.0.to_le_bytes());
-    b.push(0); // repl = 0
-    push_rect(&mut b, full);
-    push_rect(&mut b, full); // clipr
-    b.extend_from_slice(&PALEYELLOW.to_le_bytes());
-    let _ = step_rpc(&mut srv, "alloc", 2, &Wsysmsg::Twrdraw { data: b }, &mut failed);
+    // Shared SPEC.md §6 encoder (roundtrip-verified against the live acme
+    // captures): 'b' is 51 bytes — id, screenid[4] (u16 + 2 ignored high
+    // bytes), refresh, chan, repl, r, clipr, value — all LE. The old
+    // hand-rolled version wrote screen_id as a bare u16 (49-byte command)
+    // and devdraw answered "bad draw command".
+    let alloc = encode_drawcmds(&[DrawCmd::Allocate {
+        id: 1,
+        screen_id: 0, // plain image, no window
+        refresh: 0,   // Refbackup
+        chan: Chan::XRGB32.0,
+        repl: 0,
+        r: full,
+        clip_r: full,
+        value: PALEYELLOW,
+    }]);
+    debug_assert_eq!(alloc.len(), 51);
+    let _ = step_rpc(&mut srv, "alloc", 2, &Wsysmsg::Twrdraw { data: alloc }, &mut failed);
 
     // --- 3. fill: 'd' src=1 over image 0 (whole screen) + 'v' flush -------
-    // 'd' composite, 45 bytes: dst@1, src@5, mask@9, r@13, srcpt@29,
-    // maskpt@37; 'v' flush is the 1-byte tail (the fixture's d+v = 46).
-    let mut d = Vec::with_capacity(46);
-    d.push(b'd');
-    d.extend_from_slice(&0u32.to_le_bytes()); // dst = screen image
-    d.extend_from_slice(&1u32.to_le_bytes()); // src = paleyellow image
-    d.extend_from_slice(&0u32.to_le_bytes()); // mask = none (v0 ignores it)
-    push_rect(&mut d, full);
-    push_point(&mut d, Point { x: 0, y: 0 }); // srcpt
-    push_point(&mut d, Point { x: 0, y: 0 }); // maskpt
-    d.push(b'v');
-    let _ = step_rpc(&mut srv, "fill", 3, &Wsysmsg::Twrdraw { data: d }, &mut failed);
+    // 'd' composite (45 bytes: dst, src, mask, r, srcpt, maskpt) plus the
+    // 1-byte 'v' flush — 46 total, like the fixture's d+v pair.
+    let fill = encode_drawcmds(&[
+        DrawCmd::Draw {
+            dst_id: 0, // screen image
+            src_id: 1, // paleyellow image
+            mask_id: 0,
+            r: full,
+            src_pt: Point { x: 0, y: 0 },
+            mask_pt: Point { x: 0, y: 0 },
+        },
+        DrawCmd::Flush,
+    ]);
+    debug_assert_eq!(fill.len(), 46);
+    let _ = step_rpc(&mut srv, "fill", 3, &Wsysmsg::Twrdraw { data: fill }, &mut failed);
 
     // --- 4. readback: 'r' image 0 full rect, then drain Trddraw ------------
     let need = (W * H * 4) as usize;
-    let mut r = Vec::with_capacity(21);
-    r.push(b'r');
-    r.extend_from_slice(&0u32.to_le_bytes());
-    push_rect(&mut r, full);
+    let r = encode_drawcmds(&[DrawCmd::ReadPixels { id: 0, r: full }]);
+    debug_assert_eq!(r.len(), 21);
     let mut got = Vec::with_capacity(need);
     let mut read_failed = failed;
     if step_rpc(&mut srv, "readback-r", 4, &Wsysmsg::Twrdraw { data: r }, &mut read_failed).is_some() {
@@ -286,16 +291,6 @@ fn server_bin() -> Option<std::path::PathBuf> {
 
 fn rect(x0: u32, y0: u32, x1: u32, y1: u32) -> Rect {
     Rect { min: Point { x: x0, y: y0 }, max: Point { x: x1, y: y1 } }
-}
-
-fn push_rect(v: &mut Vec<u8>, r: Rect) {
-    push_point(v, r.min);
-    push_point(v, r.max);
-}
-
-fn push_point(v: &mut Vec<u8>, p: Point) {
-    v.extend_from_slice(&p.x.to_le_bytes());
-    v.extend_from_slice(&p.y.to_le_bytes());
 }
 
 /// The child server plus a reader thread feeding decoded frames through

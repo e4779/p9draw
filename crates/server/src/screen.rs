@@ -25,10 +25,14 @@
 //! - unknown drawfcall types get Rerror, so the client tells us what is
 //!   still missing (SPEC.md §2.3: Rerror answers any request).
 //!
+//! 'y'/'Y' pixel writes (memload / _cloadmemimage) land through
+//! render::write_bytes[_compressed]; grey masks in 'd' blend like memdraw
+//! (acme's allocimagemix qmask GREY8 0x3f).
+//!
 //! v0 gaps (accepted, logged in the module docs): fonts ('i'/'l'/'s'/'x')
-//! and compressed writes ('Y') are accepted but not rasterized, so acme
-//! runs but its text is invisible; 'e'/'E'/'p'/'P' are no-ops; the cursor
-//! is not themed; 'd' composes opaquely (mask/alpha ignored).
+//! are accepted but not rasterized, so glyph bits land in images but acme
+//! text is still invisible until a string raster exists; 'e'/'E'/'p'/'P'
+//! are no-ops; the cursor is not themed.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -39,7 +43,10 @@ use std::time::Duration;
 
 use p9draw_host::{HostEvent, ScreenHost};
 use p9draw_protocol::{DrawCmd, Point, Rect, Wsysmsg, decode, encode, parse_drawcmds};
-use p9draw_render::{Chan, Image, compose_over, draw_tile, fill};
+use p9draw_render::{
+    Chan, Image, compose_over, compose_over_masked, draw_tile_masked, fill, write_bytes,
+    write_bytes_compressed,
+};
 
 use crate::frameread::FrameAssembler;
 use crate::pump::Logger;
@@ -209,7 +216,7 @@ fn make_image(
         return Err("bad draw command".to_string());
     }
     let depth = chan.depth();
-    if depth == 0 || depth % 8 != 0 {
+    if depth == 0 {
         return Ok(Image {
             id,
             rect: r,
@@ -218,6 +225,22 @@ fn make_image(
             repl,
             pixels: Vec::new(),
         });
+    }
+    if depth % 8 != 0 {
+        // Sub-byte channels (GREY1/2/4 — acme's masks and its GREY1 font
+        // glyph images): packed rows via with_packed, born-filled with the
+        // value bit pattern (memfillcolor). The v0 blit never samples them
+        // (bpp guard / opaque masks), but 'y'/'Y' must land somewhere.
+        let word = chan.rgbatoimg(value);
+        let mut byte = 0u8;
+        for bit in 0..8 {
+            if (word >> (bit % depth)) & 1 == 1 {
+                byte |= 1 << bit;
+            }
+        }
+        let len = rect_dy(r) as usize * ((rect_dx(r) as usize * depth as usize + 7) / 8);
+        return Image::with_packed(id, r, clip_r, chan, repl, vec![byte; len])
+            .map_err(|e| e.to_string());
     }
     let len = rect_dx(r) as usize * rect_dy(r) as usize * (depth / 8) as usize;
     let mut img = Image {
@@ -294,34 +317,6 @@ fn draw_line(dst: &mut Image, p0: Point, p1: Point, value: u32) {
             y0 += step_y;
         }
     }
-}
-
-/// 'y' memload: raw pixel rows (`bytesperline(R)·Dy(R)` bytes) into the
-/// image at `r`. devdraw passes the whole rest of the write to memload;
-/// we require the exact row span and reject partial writes.
-fn write_pixels(img: &mut Image, r: Rect, data: &[u8]) -> Result<(), String> {
-    if !rect_contains(img.rect, r) {
-        return Err("writeimage outside image".to_string());
-    }
-    let bpp = (img.chan.depth() / 8) as usize;
-    if bpp == 0 {
-        return Ok(()); // stub image: nothing to fill
-    }
-    let w = rect_dx(r) as usize;
-    let rows = rect_dy(r) as usize;
-    let need = w * bpp * rows;
-    if data.len() < need {
-        return Err("bad draw command".to_string());
-    }
-    let bpl = rect_dx(img.rect) as usize * bpp;
-    let x0 = (sx(r.min.x) - sx(img.rect.min.x)) as usize;
-    let y0 = (sx(r.min.y) - sx(img.rect.min.y)) as usize;
-    for row in 0..rows {
-        let dst = (y0 + row) * bpl + x0 * bpp;
-        let src = row * w * bpp;
-        img.pixels[dst..dst + w * bpp].copy_from_slice(&data[src..src + w * bpp]);
-    }
-    Ok(())
 }
 
 /// 'r' readpixels: rows of `img` at `r` into the readdata buffer (same
@@ -489,7 +484,17 @@ impl Screen {
                     img.repl = repl != 0;
                     img.clipr = isect(clip_r, img.rect);
                 }
-                DrawCmd::Draw { dst_id, src_id, mask_id: _, r, src_pt, mask_pt: _ } => {
+                DrawCmd::Draw { dst_id, src_id, mask_id, r, src_pt, mask_pt } => {
+                    // Mask channel (SPEC.md 'd' maskid/maskpt): grey masks
+                    // blend (acme's allocimagemix qmask GREY8 0x3f), masks
+                    // of other shapes draw opaque like the old behavior.
+                    // 1×1 in the traffic — the clone keeps the borrow simple.
+                    let mask_img = if mask_id == 0 {
+                        None
+                    } else {
+                        self.images.get(&mask_id).cloned()
+                    };
+                    let mask = mask_img.as_ref().map(|m| (m, mask_pt));
                     if src_id == dst_id {
                         // self-copy needs the image twice: clone the source.
                         let src = self
@@ -502,13 +507,13 @@ impl Screen {
                             .get_mut(&dst_id)
                             .ok_or_else(|| "unknown id for draw image".to_string())?;
                         if src.repl {
-                            draw_tile(dst, r, &src, src_pt);
+                            draw_tile_masked(dst, r, &src, src_pt, mask);
                         } else {
                             let src_rect = Rect {
                                 min: src_pt,
                                 max: point_add(src_pt, rect_dx(r), rect_dy(r)),
                             };
-                            compose_over(dst, r, &src, src_rect);
+                            compose_over_masked(dst, r, &src, src_rect, mask);
                         }
                     } else {
                         let src = self.remove_image(src_id)?;
@@ -519,13 +524,13 @@ impl Screen {
                         {
                             let dst = self.images.get_mut(&dst_id).expect("checked above");
                             if src.repl {
-                                draw_tile(dst, r, &src, src_pt);
+                                draw_tile_masked(dst, r, &src, src_pt, mask);
                             } else {
                                 let src_rect = Rect {
                                     min: src_pt,
                                     max: point_add(src_pt, rect_dx(r), rect_dy(r)),
                                 };
-                                compose_over(dst, r, &src, src_rect);
+                                compose_over_masked(dst, r, &src, src_rect, mask);
                             }
                         }
                         self.images.insert(src_id, src);
@@ -606,13 +611,26 @@ impl Screen {
                     read_pixels_into(img, r, &mut self.readdata);
                 }
                 DrawCmd::WritePixels { id, r, data } => {
+                    // devdraw checks rectinrect(r, dst->r) up front
+                    // (Rerror "writeimage outside image"); write_bytes
+                    // then clips to the image window.
                     let img = self.lookup_mut(id)?;
-                    write_pixels(img, r, &data)?;
+                    if !rect_contains(img.rect, r) {
+                        return Err("writeimage outside image".to_string());
+                    }
+                    write_bytes(img, r, &data).map_err(|e| e.to_string())?;
                     dirty = true;
                 }
-                DrawCmd::WriteCompressed { .. } => {
-                    // plan9-compressed pixel stream: not decoded in v0; the
-                    // batch survives, the image content is not updated.
+                DrawCmd::WriteCompressed { id, r, data } => {
+                    // 'Y' — the plan9-compressed load acme uses for its
+                    // GREY1 font glyph images (2029-byte stream in the
+                    // interactive capture). Same containment rule as 'y'.
+                    let img = self.lookup_mut(id)?;
+                    if !rect_contains(img.rect, r) {
+                        return Err("writeimage outside image".to_string());
+                    }
+                    write_bytes_compressed(img, r, &data).map_err(|e| e.to_string())?;
+                    dirty = true;
                 }
                 DrawCmd::Flush => {
                     dirty = true;

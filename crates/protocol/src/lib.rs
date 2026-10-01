@@ -23,7 +23,7 @@ mod encode;
 mod messages;
 
 pub use decode::decode;
-pub use drawcmd::{parse_drawcmds, DrawCmd};
+pub use drawcmd::{encode_drawcmds, parse_drawcmds, DrawCmd};
 pub use encode::{encode, encode_into, encoded_size};
 pub use messages::*;
 

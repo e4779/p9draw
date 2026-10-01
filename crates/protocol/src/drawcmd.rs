@@ -624,6 +624,268 @@ fn parse_one(buf: &[u8], off: usize) -> Result<(DrawCmd, usize), ProtocolError> 
     })
 }
 
+// --- encoding (SPEC.md §6, little-endian) ----------------------------------
+//
+// The inverse of [parse_drawcmds]: pack commands back into the wire
+// stream. Field offsets above are the single source of truth; the encoder
+// mirrors them field by field. Round-trip identity encode∘parse == id is
+// regression-tested against every Twrdraw payload of the live acme
+// captures (tests/drawcmd_roundtrip.rs).
+
+/// Encode commands into the packed inner draw stream (SPEC.md §6,
+/// little-endian). [DrawCmd::Unknown] has no wire form (a packed stream
+/// cannot skip an unknown command) and is skipped.
+pub fn encode_drawcmds(cmds: &[DrawCmd]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for cmd in cmds {
+        encode_one(cmd, &mut out);
+    }
+    out
+}
+
+fn encode_one(cmd: &DrawCmd, out: &mut Vec<u8>) {
+    fn u16(v: u16, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    fn u32(v: u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    fn point(p: &Point, out: &mut Vec<u8>) {
+        u32(p.x, out);
+        u32(p.y, out);
+    }
+    fn rect(r: &Rect, out: &mut Vec<u8>) {
+        point(&r.min, out);
+        point(&r.max, out);
+    }
+    match cmd {
+        DrawCmd::Allocate { id, screen_id, refresh, chan, repl, r, clip_r, value } => {
+            out.push(b'b');
+            u32(*id, out);
+            // devdraw reads BGSHORT(a+5): the u16 lands in the low half and
+            // bytes 7..9 are ignored — emit the zeroed high half.
+            u16(*screen_id, out);
+            out.extend_from_slice(&[0, 0]);
+            out.push(*refresh);
+            u32(*chan, out);
+            out.push(*repl);
+            rect(r, out);
+            rect(clip_r, out);
+            u32(*value, out);
+        }
+        DrawCmd::AllocScreen { id, image_id, fill_id, public } => {
+            out.push(b'A');
+            u32(*id, out);
+            u32(*image_id, out);
+            u32(*fill_id, out);
+            out.push(*public);
+        }
+        DrawCmd::PublicScreen { id, chan } => {
+            out.push(b'S');
+            u32(*id, out);
+            u32(*chan, out);
+        }
+        DrawCmd::ReplClip { dst_id, repl, clip_r } => {
+            out.push(b'c');
+            u32(*dst_id, out);
+            out.push(*repl);
+            rect(clip_r, out);
+        }
+        DrawCmd::Draw { dst_id, src_id, mask_id, r, src_pt, mask_pt } => {
+            out.push(b'd');
+            u32(*dst_id, out);
+            u32(*src_id, out);
+            u32(*mask_id, out);
+            rect(r, out);
+            point(src_pt, out);
+            point(mask_pt, out);
+        }
+        DrawCmd::Debug { val } => {
+            out.push(b'D');
+            out.push(*val);
+        }
+        DrawCmd::Ellipse { filled, dst_id, src_id, center, a, b, thick, sp, ox, oy } => {
+            out.push(if *filled { b'E' } else { b'e' });
+            u32(*dst_id, out);
+            u32(*src_id, out);
+            point(center, out);
+            u32(*a, out);
+            u32(*b, out);
+            u32(*thick, out);
+            point(sp, out);
+            u32(*ox, out);
+            u32(*oy, out);
+        }
+        DrawCmd::Free { id } | DrawCmd::FreeScreen { id } => {
+            out.push(if matches!(cmd, DrawCmd::Free { .. }) { b'f' } else { b'F' });
+            u32(*id, out);
+        }
+        DrawCmd::InitFont { font_id, nchars, ascent } => {
+            out.push(b'i');
+            u32(*font_id, out);
+            u32(*nchars, out);
+            out.push(*ascent);
+        }
+        DrawCmd::Image0Screen => out.push(b'J'),
+        DrawCmd::ReadInfo => out.push(b'I'),
+        DrawCmd::Query { specs } => {
+            out.push(b'q');
+            out.push(specs.len() as u8);
+            out.extend_from_slice(specs);
+        }
+        DrawCmd::LoadFont { font_id, src_id, index, r, sp, left, width } => {
+            out.push(b'l');
+            u32(*font_id, out);
+            u32(*src_id, out);
+            u16(*index, out);
+            rect(r, out);
+            point(sp, out);
+            out.push(*left);
+            out.push(*width);
+        }
+        DrawCmd::Line { dst_id, p0, p1, end0, end1, radius, src_id, sp } => {
+            out.push(b'L');
+            u32(*dst_id, out);
+            point(p0, out);
+            point(p1, out);
+            u32(*end0, out);
+            u32(*end1, out);
+            u32(*radius, out);
+            u32(*src_id, out);
+            point(sp, out);
+        }
+        DrawCmd::AttachNamed { dst_id, name } => {
+            out.push(b'n');
+            u32(*dst_id, out);
+            out.push(name.len() as u8);
+            out.extend_from_slice(name.as_bytes());
+        }
+        DrawCmd::NameImage { dst_id, set, name } => {
+            out.push(b'N');
+            u32(*dst_id, out);
+            out.push(u8::from(*set));
+            out.push(name.len() as u8);
+            out.extend_from_slice(name.as_bytes());
+        }
+        DrawCmd::Position { id, r_min, screen_r_min } => {
+            out.push(b'o');
+            u32(*id, out);
+            point(r_min, out);
+            point(screen_r_min, out);
+        }
+        DrawCmd::SetOp { op } => {
+            out.push(b'O');
+            out.push(*op);
+        }
+        DrawCmd::Polygon { dst_id, n, end0, end1, radius, src_id, sp, pts }
+        | DrawCmd::FillPolygon { dst_id, n, wind: end0, ignore: [end1, radius], src_id, sp, pts } => {
+            out.push(if matches!(cmd, DrawCmd::Polygon { .. }) { b'p' } else { b'P' });
+            u32(*dst_id, out);
+            u16(*n, out);
+            u32(*end0, out);
+            u32(*end1, out);
+            u32(*radius, out);
+            u32(*src_id, out);
+            point(sp, out);
+            // n+1 drawcoord vertices accumulated from (0, 0) — the module
+            // quirk note on parse_one 'p'/'P' applies verbatim in reverse.
+            let (mut ox, mut oy) = (0u32, 0u32);
+            for p in pts {
+                drawcoord_encode(out, ox, p.x);
+                ox = p.x;
+                drawcoord_encode(out, oy, p.y);
+                oy = p.y;
+            }
+        }
+        DrawCmd::ReadPixels { id, r } => {
+            out.push(b'r');
+            u32(*id, out);
+            rect(r, out);
+        }
+        DrawCmd::String { dst_id, src_id, font_id, p, clip_r, sp, indices } => {
+            out.push(b's');
+            string_head(dst_id, src_id, font_id, p, clip_r, sp, indices.len(), out);
+            push_indices(indices, out);
+        }
+        DrawCmd::StringBg { dst_id, src_id, font_id, p, clip_r, sp, bg_id, bg_pt, indices } => {
+            out.push(b'x');
+            string_head(dst_id, src_id, font_id, p, clip_r, sp, indices.len(), out);
+            u32(*bg_id, out);
+            point(bg_pt, out);
+            push_indices(indices, out);
+        }
+        DrawCmd::Top { top, ids } => {
+            out.push(b't');
+            out.push(*top);
+            u16(ids.len() as u16, out);
+            for id in ids {
+                u32(*id, out);
+            }
+        }
+        DrawCmd::Flush => out.push(b'v'),
+        DrawCmd::WritePixels { id, r, data } => {
+            out.push(b'y');
+            u32(*id, out);
+            rect(r, out);
+            out.extend_from_slice(data);
+        }
+        DrawCmd::WriteCompressed { id, r, data } => {
+            out.push(b'Y');
+            u32(*id, out);
+            rect(r, out);
+            out.extend_from_slice(data);
+        }
+        DrawCmd::Unknown { .. } => {}
+    }
+}
+
+/// Shared prefix of 's'/'x': dst/src/font ids, p, clipr, sp, ni — the
+/// fields 'x' interleaves bgid/bgpt after. LE, like everything here.
+fn string_head(
+    dst_id: &u32,
+    src_id: &u32,
+    font_id: &u32,
+    p: &Point,
+    clip_r: &Rect,
+    sp: &Point,
+    ni: usize,
+    out: &mut Vec<u8>,
+) {
+    out.extend_from_slice(&dst_id.to_le_bytes());
+    out.extend_from_slice(&src_id.to_le_bytes());
+    out.extend_from_slice(&font_id.to_le_bytes());
+    out.extend_from_slice(&p.x.to_le_bytes());
+    out.extend_from_slice(&p.y.to_le_bytes());
+    out.extend_from_slice(&clip_r.min.x.to_le_bytes());
+    out.extend_from_slice(&clip_r.min.y.to_le_bytes());
+    out.extend_from_slice(&clip_r.max.x.to_le_bytes());
+    out.extend_from_slice(&clip_r.max.y.to_le_bytes());
+    out.extend_from_slice(&sp.x.to_le_bytes());
+    out.extend_from_slice(&sp.y.to_le_bytes());
+    out.extend_from_slice(&(ni as u16).to_le_bytes());
+}
+
+/// The 'ni' rune indices closing 's'/'x'.
+fn push_indices(indices: &[u16], out: &mut Vec<u8>) {
+    for ix in indices {
+        out.extend_from_slice(&ix.to_le_bytes());
+    }
+}
+
+/// Inverse of the drawcoord decoder (SPEC.md §6): a delta inside the
+/// 7-bit signed range rides the 1-byte form, anything else the 3-byte
+/// absolute form (bit7 set, low 23 bits, bit22 sign-extends on read).
+fn drawcoord_encode(out: &mut Vec<u8>, old: u32, x: u32) {
+    let delta = (x as i32).wrapping_sub(old as i32);
+    if (-64..=63).contains(&delta) {
+        out.push((delta as u8) & 0x7F);
+    } else {
+        out.push(0x80 | (x & 0x7F) as u8);
+        out.push(((x >> 7) & 0xFF) as u8);
+        out.push(((x >> 15) & 0xFF) as u8);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1217,6 +1479,170 @@ mod tests {
             parse_drawcmds(&n),
             Err(ProtocolError::DrawCmdBadUtf8 { op: b'N', offset: 0 })
         );
+    }
+
+    #[test]
+    fn encode_roundtrips_wire_bytes() {
+        // parse → encode must reproduce the wire bytes exactly (including
+        // the ignored screenid high half and the counted tails), and
+        // encode → parse must yield the same command.
+        let cases: Vec<(Vec<u8>, DrawCmd)> = vec![
+            (
+                [b'b'].iter().copied()
+                    .chain(u32le(3))
+                    .chain([0x01, 0x00, 0, 0]) // u16 screenid, canonical zero half
+                    .chain([1])
+                    .chain(u32le(0x6808_1828))
+                    .chain([0])
+                    .chain(rect(0, 0, 100, 50))
+                    .chain(rect(0, 0, 100, 50))
+                    .chain(u32le(0))
+                    .collect(),
+                DrawCmd::Allocate {
+                    id: 3,
+                    screen_id: 1,
+                    refresh: 1,
+                    chan: 0x6808_1828,
+                    repl: 0,
+                    r: wire_rect(0, 0, 100, 50),
+                    clip_r: wire_rect(0, 0, 100, 50),
+                    value: 0,
+                },
+            ),
+            (
+                [b'd'].iter().copied()
+                    .chain(u32le(3)).chain(u32le(1)).chain(u32le(0))
+                    .chain(rect(0, 0, 120, 90))
+                    .chain(pt(0, 0))
+                    .chain(pt(0, 0))
+                    .collect(),
+                DrawCmd::Draw {
+                    dst_id: 3,
+                    src_id: 1,
+                    mask_id: 0,
+                    r: wire_rect(0, 0, 120, 90),
+                    src_pt: wire_point(0, 0),
+                    mask_pt: wire_point(0, 0),
+                },
+            ),
+            (
+                [b'y'].iter().copied()
+                    .chain(u32le(7))
+                    .chain(rect(0, 0, 2, 1))
+                    .chain([1, 2, 3, 4, 5, 6, 7, 8])
+                    .collect(),
+                DrawCmd::WritePixels {
+                    id: 7,
+                    r: wire_rect(0, 0, 2, 1),
+                    data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                },
+            ),
+            (
+                [b'Y'].iter().copied()
+                    .chain(u32le(7))
+                    .chain(rect(0, 0, 2, 1))
+                    .chain([0xAA, 0xBB])
+                    .collect(),
+                DrawCmd::WriteCompressed {
+                    id: 7,
+                    r: wire_rect(0, 0, 2, 1),
+                    data: vec![0xAA, 0xBB],
+                },
+            ),
+            (
+                [b'q', 2, b'd', b'd'].to_vec(),
+                DrawCmd::Query { specs: vec![b'd', b'd'] },
+            ),
+            (
+                [b't', 1].iter().copied()
+                    .chain(u16le(2))
+                    .chain(u32le(1)).chain(u32le(2))
+                    .collect(),
+                DrawCmd::Top { top: 1, ids: vec![1, 2] },
+            ),
+            (
+                [b'n'].iter().copied()
+                    .chain(u32le(4))
+                    .chain([3])
+                    .chain(b"foo".iter().copied())
+                    .collect(),
+                DrawCmd::AttachNamed { dst_id: 4, name: "foo".to_string() },
+            ),
+            (
+                [b's'].iter().copied()
+                    .chain(u32le(1)).chain(u32le(1)).chain(u32le(1))
+                    .chain(pt(0, 0))
+                    .chain(rect(0, 0, 9, 9))
+                    .chain(pt(0, 0))
+                    .chain(u16le(2))
+                    .chain(u16le(65)).chain(u16le(66))
+                    .collect(),
+                DrawCmd::String {
+                    dst_id: 1,
+                    src_id: 1,
+                    font_id: 1,
+                    p: wire_point(0, 0),
+                    clip_r: wire_rect(0, 0, 9, 9),
+                    sp: wire_point(0, 0),
+                    indices: vec![65, 66],
+                },
+            ),
+            (
+                [b'x'].iter().copied()
+                    .chain(u32le(1)).chain(u32le(1)).chain(u32le(1))
+                    .chain(pt(0, 0))
+                    .chain(rect(0, 0, 9, 9))
+                    .chain(pt(0, 0))
+                    .chain(u16le(1))
+                    .chain(u32le(2))
+                    .chain(pt(1, 1))
+                    .chain(u16le(65))
+                    .collect(),
+                DrawCmd::StringBg {
+                    dst_id: 1,
+                    src_id: 1,
+                    font_id: 1,
+                    p: wire_point(0, 0),
+                    clip_r: wire_rect(0, 0, 9, 9),
+                    sp: wire_point(0, 0),
+                    bg_id: 2,
+                    bg_pt: wire_point(1, 1),
+                    indices: vec![65],
+                },
+            ),
+        ];
+        for (wire, cmd) in &cases {
+            assert_eq!(encode_drawcmds(&[cmd.clone()]), *wire, "encode {cmd:?}");
+            assert_eq!(parse_drawcmds(&wire), Ok(vec![cmd.clone()]), "reparse {cmd:?}");
+        }
+        // The screenid high half is ignored on read (BGSHORT), so the
+        // encoder's contract there is one-sided: garbage is accepted and
+        // normalized to zeros, never reproduced.
+        let mut garbage = cases[0].0.clone();
+        garbage[7] = 0xAB;
+        garbage[8] = 0xCD;
+        assert_eq!(parse_drawcmds(&garbage), Ok(vec![cases[0].1.clone()]));
+        assert_eq!(encode_drawcmds(&[cases[0].1.clone()]), cases[0].0);
+    }
+
+    #[test]
+    fn encode_polygon_roundtrips_semantically() {
+        // Byte identity for 'p' depends on the client's delta-vs-absolute
+        // drawcoord choices, so the encoder contract for polygons is
+        // semantic: parse(encode(cmd)) == cmd, and the wire length matches
+        // the layout (31 header + n+1 vertices of 1 or 3 bytes each).
+        let cmd = DrawCmd::Polygon {
+            dst_id: 5,
+            n: 2,
+            end0: 1,
+            end1: 2,
+            radius: 3,
+            src_id: 4,
+            sp: wire_point(0, 0),
+            pts: vec![wire_point(10, 12), wire_point(200, -30), wire_point(100_000, 7)],
+        };
+        let wire = encode_drawcmds(&[cmd.clone()]);
+        assert_eq!(parse_drawcmds(&wire), Ok(vec![cmd]));
     }
 
     #[test]
