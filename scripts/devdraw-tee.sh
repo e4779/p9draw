@@ -47,7 +47,7 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 REAL="$DIR/devdraw.real"
 
 # Passthrough: nothing here may alter behavior, not even diagnostics.
-if [ "${P9DRAW_CAPTURE:-0}" != "1" ]; then
+if [ "${P9DRAW_CAPTURE:-0}" != "1" ] && [ "${P9DRAW_SERVE:-0}" != "1" ]; then
     exec "$REAL" "$@"
 fi
 
