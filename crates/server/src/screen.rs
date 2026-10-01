@@ -550,24 +550,43 @@ fn draw_string(
             .sum();
         let bx = sx(p.x);
         let by = sx(p.y) - i32::from(ascent);
-        let r = Rect {
-            min: Point {
-                x: bx as u32,
-                y: by as u32,
-            },
-            max: Point {
-                x: (bx + sum_w) as u32,
-                y: (by + rect_dy(mask_img.rect)) as u32,
-            },
-        };
-        if bg.repl {
-            draw_tile_masked(dst, r, &bg, bg_pt, None);
-        } else {
-            let src_rect = Rect {
-                min: bg_pt,
-                max: point_add(bg_pt, rect_dx(r), rect_dy(r)),
+        let bh = rect_dy(mask_img.rect) as i32;
+        // The bg rect legitimately extends above the image top (p.y -
+        // ascent < 0 on the first text line). Clip it in SIGNED space
+        // against the destination rect and clipr BEFORE casting to u32 —
+        // casting the raw negative min wraps it into an inverted empty
+        // rect, and the background is never painted.
+        let omin_x = bx;
+        let omin_y = by;
+        let omax_x = bx + sum_w;
+        let omax_y = by + bh;
+        let cmin_x = omin_x.max(sx(dst.rect.min.x)).max(sx(clip_r.min.x));
+        let cmin_y = omin_y.max(sx(dst.rect.min.y)).max(sx(clip_r.min.y));
+        let cmax_x = omax_x.min(sx(dst.rect.max.x)).min(sx(clip_r.max.x));
+        let cmax_y = omax_y.min(sx(dst.rect.max.y)).min(sx(clip_r.max.y));
+        if cmin_x < cmax_x && cmin_y < cmax_y {
+            let ddx = cmin_x - omin_x;
+            let ddy = cmin_y - omin_y;
+            let r = Rect {
+                min: Point {
+                    x: cmin_x as u32,
+                    y: cmin_y as u32,
+                },
+                max: Point {
+                    x: cmax_x as u32,
+                    y: cmax_y as u32,
+                },
             };
-            compose_over_masked(dst, r, &bg, src_rect, None);
+            if bg.repl {
+                draw_tile_masked(dst, r, &bg, point_add(bg_pt, ddx, ddy), None);
+            } else {
+                let src_min = point_add(bg_pt, ddx, ddy);
+                let src_rect = Rect {
+                    min: src_min,
+                    max: point_add(src_min, rect_dx(r), rect_dy(r)),
+                };
+                compose_over_masked(dst, r, &bg, src_rect, None);
+            }
         }
     }
     let mut pen = p;
