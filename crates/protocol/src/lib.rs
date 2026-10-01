@@ -12,16 +12,18 @@
 //!   the error reply to any request (SPEC.md §2.3).
 //! * Primitives are big-endian; strings are `n[4 BE] + n bytes` without NUL.
 //!   The *inner* draw stream carried inside `Twrdraw`/`Trddraw` is
-//!   little-endian and out of scope here (see ARCHITECTURE.md, `draw.rs`).
+//!   little-endian; [`DrawCmd`] / [`parse_drawcmds`] decode it (SPEC.md §6).
 //!
 //! No IO and no dependencies: everything is a pure function over byte
 //! slices, so the whole protocol surface is pinned by golden-byte tests.
 
 mod decode;
+mod drawcmd;
 mod encode;
 mod messages;
 
 pub use decode::decode;
+pub use drawcmd::{parse_drawcmds, DrawCmd};
 pub use encode::{encode, encode_into, encoded_size};
 pub use messages::*;
 
@@ -68,6 +70,29 @@ pub enum ProtocolError {
     InvalidUtf8 {
         ty: u8,
     },
+    /// Inner draw stream (SPEC.md §6): the op byte at `offset` has no entry
+    /// in the command table. A packed stream cannot skip a command whose
+    /// length is unknown, so parsing stops there (devdraw Rerrors the
+    /// whole Twrdraw).
+    UnknownDrawCmd {
+        op: u8,
+        offset: usize,
+    },
+    /// Inner draw command `op` starting at `offset` needs `needed` bytes,
+    /// only `got` are available (fixed-size shortfall, or a cut variable
+    /// part: counts, names, rune indices, drawcoord vertices).
+    DrawCmdTruncated {
+        op: u8,
+        offset: usize,
+        needed: usize,
+        got: usize,
+    },
+    /// Inner draw command's `name` field is not valid UTF-8 (Plan 9 names
+    /// are UTF-8, mirroring the outer-protocol string check).
+    DrawCmdBadUtf8 {
+        op: u8,
+        offset: usize,
+    },
 }
 
 impl std::fmt::Display for ProtocolError {
@@ -96,6 +121,18 @@ impl std::fmt::Display for ProtocolError {
                 )
             }
             Self::InvalidUtf8 { ty } => write!(f, "type {ty}: string field is not valid UTF-8"),
+            Self::UnknownDrawCmd { op, offset } => {
+                write!(f, "inner draw stream: unknown command {op:#04x} at offset {offset}")
+            }
+            Self::DrawCmdTruncated { op, offset, needed, got } => {
+                write!(
+                    f,
+                    "inner draw command {op:#04x} at offset {offset}: need {needed} bytes, got {got}"
+                )
+            }
+            Self::DrawCmdBadUtf8 { op, offset } => {
+                write!(f, "inner draw command {op:#04x} at offset {offset}: name is not valid UTF-8")
+            }
         }
     }
 }
@@ -241,7 +278,7 @@ mod tests {
 
     /// Data-segment frames: read request, write ack, and both
     /// `count[4] data[count]` segments (the little-endian draw commands
-    /// inside `data` are out of scope for this crate).
+    /// inside `data` are decoded by [`parse_drawcmds`]).
     #[test]
     fn golden_draw_data_frames() {
         assert_golden(&Wsysmsg::Trddraw { count: 65536 }, 2, "0000000a021400010000");
