@@ -1,0 +1,10 @@
+[package]
+name = "p9draw-server"
+version = "0.1.0"
+edition.workspace = true
+description = "Observation tooling for the plan9port devdraw wire protocol: unix-socket logger, MITM capture (socket + legacy pipe), raw dumps"
+
+[dependencies]
+p9draw-protocol = { path = "../protocol" }
+
+# std only by design (unix sockets): no external crates.

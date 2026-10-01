@@ -101,6 +101,21 @@ tо же — не держать lock draw-данных, ожидая графи
 4. Полный draw-поток (`drawdata.rs`) + `readdata`.
 5. Стабилизация `Backend` → передача эстафеты gpu-кирпичу.
 
+## Phase 4: capture (MITM реального трафика)
+
+`p9draw-server` — пока утилита наблюдения (std-only, deps: только
+p9draw-protocol; session/dispatch из таблицы выше — следующий шаг).
+`serve --socket P` — accept-цикл: каждый входящий кадр decode+лог,
+ответов нет. `capture --listen P --upstream P2 [--dump-dir D]` — MITM
+серверного транспорта (`$wsysid` → dial `unix!$NAMESPACE/name`): сырые
+байты форвардятся без изменений, decode идёт параллельно, дампы —
+`c2s.bin`/`s2c.bin`; срыв фрейминга отключает декодер, но не проброс.
+`capture-pipe -- CMD` — тот же MITM для legacy-транспорта (клиент сам
+fork+exec-ит devdraw, связь по pipe fd 0/1; CMD = `devdraw.real`).
+`scripts/devdraw-tee.sh` — обёртка под `$PLAN9/bin/devdraw`:
+passthrough по умолчанию, MITM при `P9DRAW_CAPTURE=1` (дампы в
+`$P9DRAW_CAPTURE_DIR`); OPEN по жизненному циклу `-s` — в шапке скрипта.
+
 ## Риски
 
 - **Два endianness в одном протоколе** (drawfcall BE, draw-поток LE) —
