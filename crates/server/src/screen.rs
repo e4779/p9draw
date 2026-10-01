@@ -44,8 +44,12 @@ use p9draw_render::{Chan, Image, compose_over, draw_tile, fill};
 use crate::frameread::FrameAssembler;
 use crate::pump::Logger;
 
-/// Empty or unparsable winsize → this size (SPEC.md §2.4 winsize is a
-/// client hint; 900x700 is our fallback window).
+/// Last resort when neither the Tinit hint nor `$WINSIZE` yields a
+/// size (SPEC.md §2.4 winsize is a client hint; 900x700 is our fallback
+/// window). plan9port has no env knob at all — an empty libdraw
+/// `winsize` global makes x11 devdraw consult X resources — so reading
+/// WINSIZE in the server is a p9draw container extension: set e.g.
+/// `WINSIZE=1939x1293` when launching acme for a bigger canvas.
 pub const DEFAULT_WINSIZE: (u32, u32) = (900, 700);
 /// Screen image channel: byte-identical to `ScreenHost::surface()`
 /// (B, G, R, X per pixel — see p9draw-host docs and SPEC.md §7).
@@ -89,6 +93,21 @@ fn parse_u32(s: &str) -> Result<u32, String> {
     s.trim()
         .parse::<u32>()
         .map_err(|e| format!("bad number {s:?}: {e}"))
+}
+
+/// Client winsize resolution order (SPEC.md §2.4): the Tinit hint (what a
+/// plan9port client puts into libdraw's `winsize` global; acme sends ""),
+/// then the `WINSIZE` environment variable, then [`DEFAULT_WINSIZE`].
+/// `Err` means the chosen string did not parse — the caller logs it and
+/// falls back to the default, exactly like a bad explicit hint.
+fn resolve_winsize(hint: &str, env: Option<&str>) -> Result<(u32, u32), String> {
+    if !hint.trim().is_empty() {
+        return parse_winsize(hint);
+    }
+    match env.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => parse_winsize(s),
+        None => Ok(DEFAULT_WINSIZE),
+    }
 }
 
 /// ms since boot from `/proc/uptime` content — the field acme's `msec`
@@ -208,7 +227,12 @@ fn make_image(
         repl,
         pixels: vec![0u8; len],
     };
-    fill(&mut img, r, value);
+    // The wire value is the canonical D-color RGBA (`r<<24|g<<16|b<<8|a`,
+    // draw.h: DPaleyellow = 0xFFFFAAFF) — memfillcolor runs it through
+    // _rgbatoimg into the image's channel format before painting. Filling
+    // with the raw word misreads it as b<<0|g<<8|r<<16 and turns acme
+    // paleyellow pink.
+    fill(&mut img, r, chan.rgbatoimg(value));
     img.clipr = isect(clip_r, r);
     Ok(img)
 }
@@ -384,7 +408,8 @@ pub struct Screen {
 
 impl Screen {
     fn init(winsize: &str, label: &str, logger: &Logger) -> Result<Screen, String> {
-        let (w, h) = match parse_winsize(winsize) {
+        let env_ws = std::env::var("WINSIZE").ok();
+        let (w, h) = match resolve_winsize(winsize, env_ws.as_deref()) {
             Ok(wh) => wh,
             Err(e) => {
                 logger.log(&format!(
@@ -1004,6 +1029,62 @@ mod tests {
         assert!(parse_winsize("hello").is_err());
         assert!(parse_winsize("100x").is_err());
         assert!(parse_winsize("x700").is_err());
+    }
+
+    #[test]
+    fn make_image_converts_d_color_values_per_memdraw() {
+        // draw.h D-colors ride the wire as canonical RGBA (alpha in the
+        // low byte): DPaleyellow = 0xFFFFAAFF. memfillcolor converts via
+        // _rgbatoimg to the chan format — x8r8g8b8 memory bytes are
+        // [b g r x] = AA FF FF 00 (pale yellow), not the raw-word bytes
+        // FF AA FF FF (pale pink).
+        let img = make_image(
+            1,
+            rect_of(2, 1),
+            rect_of(2, 1),
+            Chan::XRGB32,
+            false,
+            0xFFFF_AAFF,
+        )
+        .unwrap();
+        assert_eq!(
+            img.pixels,
+            vec![0xAA, 0xFF, 0xFF, 0x00, 0xAA, 0xFF, 0xFF, 0x00]
+        );
+        // DDarkyellow = 0xEEEE9EFF — acme's selection-highlight tile.
+        let img = make_image(
+            2,
+            rect_of(1, 1),
+            rect_of(1, 1),
+            Chan::XRGB32,
+            false,
+            0xEEEE_9EFF,
+        )
+        .unwrap();
+        assert_eq!(img.pixels, vec![0x9E, 0xEE, 0xEE, 0x00]);
+        // Alpha is dropped when the chan has no alpha channel; DRed is red.
+        let img = make_image(
+            3,
+            rect_of(1, 1),
+            rect_of(1, 1),
+            Chan::XRGB32,
+            false,
+            0xFF00_00FF,
+        )
+        .unwrap();
+        assert_eq!(img.pixels, vec![0x00, 0x00, 0xFF, 0x00]);
+    }
+
+    #[test]
+    fn winsize_hint_then_env_then_default() {
+        assert_eq!(resolve_winsize("800x600", Some("1939x1293")), Ok((800, 600)));
+        assert_eq!(resolve_winsize("", Some("1939x1293")), Ok((1939, 1293)));
+        assert_eq!(resolve_winsize("   ", None), Ok(DEFAULT_WINSIZE));
+        assert_eq!(resolve_winsize("", Some("  ")), Ok(DEFAULT_WINSIZE));
+        // A bad explicit hint stays an error (caller logs + defaults).
+        assert!(resolve_winsize("bogus", None).is_err());
+        // So does a bad env value when the hint is empty.
+        assert!(resolve_winsize("", Some("bogus")).is_err());
     }
 
     // --- uptime ms (OPEN-5: msec base) -------------------------------------

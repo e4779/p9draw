@@ -67,10 +67,11 @@ devdraw, MITM стоит ровно на его pipe). Файлы: `c2s.bin` (19
    генерация name/id не наблюдаема. Нужен захват серверного режима.
 2. chan macOS — **STILL-OPEN**: capture на Linux/X11 (x8r8g8b8, 192 dpi);
    `mac-screen.c` не сверялся.
-3. Порядок байтов пикселя / упаковка value — **провод: CONFIRMED**
-   (chan-дескриптор и LE-упаковка подтверждены байтами, §3); **память:
-   STILL-OPEN** — порядок каналов внутри `value`/пикселя требует сверки
-   `memdraw.h`/`alloc.c` перед растеризацией.
+3. Порядок байтов пикселя / упаковка value — **CONFIRMED** (провод: §3;
+   память: libmemdraw `memsetchan`/`_rgbatoimg`/`_memfillcolor` —
+   пиксель x8r8g8b8 в памяти `[B,G,R,X]`, `value` = канонический RGBA
+   (D-цвета: `DPaleyellow` = `0xFFFFAAFF`), конвертируется `_rgbatoimg`;
+   детали — SPEC.md §8 п.3, реализация `Chan::rgbatoimg`).
 4. Лимит кадра на сервере — **STILL-OPEN**: максимальный кадр в capture
    235 B, лимит не нагружался.
 5. `msec` мыши — **CONFIRMED** (interactive-захват, §6): база = ms с

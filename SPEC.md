@@ -312,8 +312,9 @@ x = b & 0x7F;
 
 X11 выбирает канал по глубине visual (research, x11-screen.c):
 GREY1/2/4, CMAP8, RGB15, RGB16, RGB24, XRGB32; при byteswap-дисплее
-XBGR32/BGR24. Поле `value` в `'b'` — u32-пиксель, упаковка определяется
-дескриптором (см. OPEN-3).
+XBGR32/BGR24. Поле `value` в `'b'` — канонический RGBA u32
+(`r<<24|g<<16|b<<8|a`, draw.h D-цвета: `DPaleyellow` = `0xFFFFAAFF`),
+memdraw прогоняет его через `_rgbatoimg` в формат канала (OPEN-3 закрыт).
 
 ---
 
@@ -332,13 +333,16 @@ XBGR32/BGR24. Поле `value` в `'b'` — u32-пиксель, упаковка
    **Статус: STILL-OPEN** — capture 2026-10-01 сделан на Linux/X11
    (экран x8r8g8b8, 192 dpi); mac-screen.c по-прежнему не сверен.
 3. **Порядок байтов пикселя в памяти** относительно chan-строки и упаковка
-   `value` в `'b'` — memdraw в этой сессии не читался; требуется сверка
-   (`memdraw.h`, `alloc.c`) перед реализацией растеризации.
-   **Статус: CONFIRMED-by-capture-2026-10-01 (провод) / STILL-OPEN (память).**
-   На проводе `chan` — LE u32, байт канала = `(код<<4)|nbits`: `x8r8g8b8` =
-   `0x68081828` (совпадает со строкой из `'I'`), GREY1 = `0x31`; `value` —
-   сырой LE u32. Порядок каналов внутри `value`/пикселя в памяти — остаётся
-   для сверки memdraw.
+   `value` в `'b'` — сверено с libmemdraw (`memsetchan`, `_rgbatoimg`,
+   `_memfillcolor`).
+   **Статус: CONFIRMED (провод и память; libmemdraw/draw.c, alloc.c).**
+   Провод: `chan` — LE u32, байт канала = `(код<<4)|nbits`: `x8r8g8b8` =
+   `0x68081828`, GREY1 = `0x31`; `value` — LE u32 в каноническом RGBA
+   (D-цвета: `r<<24|g<<16|b<<8|a`). Память: `memsetchan` даёт сдвиги от
+   последнего байта строки (b8→0, g8→8, r8→16, x8→24), т.е. на LE-хосте
+   байты пикселя `[B,G,R,X]`; `value` конвертируется `_rgbatoimg`
+   (серые — fixed-point `RGB2K >>19`). Реализация: `Chan::rgbatoimg`
+   (crates/render) + `make_image` (crates/server).
 4. **Сервер не ограничивает размер кадра** (`serveproc` растит буфер под
    `size[4]` без MAXWMSG-проверки; 4 MiB — клиентский лимит). Для p9draw
    нужно выбрать и задокументировать политику.

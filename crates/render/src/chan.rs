@@ -54,6 +54,41 @@ impl Chan {
             .map(|b| (b & 0x0f) as u32)
             .sum()
     }
+
+    /// Convert a canonical Plan 9 RGBA value into this channel format's
+    /// pixel word — memdraw `_rgbatoimg` (libmemdraw/draw.c). The input is
+    /// the draw.h D-color convention `r<<24|g<<16|b<<8|a` (alpha in the
+    /// LOW byte, `DPaleyellow = 0xFFFFAAFF`); that is exactly what rides
+    /// the wire in the 'b' allocimage `value[4]` (BPLONG, little-endian).
+    /// Descriptor bytes are walked from the LOW byte up like `memsetchan`
+    /// shifts, so the last string channel lands in the low bits; each
+    /// channel takes its color byte's top `nbits`. Grey uses plan9port's
+    /// fixed-point `RGB2K` (libmemdraw/draw.c:10); m (cmap) has no
+    /// colormap here and x (ignore) bits stay 0.
+    pub fn rgbatoimg(self, rgba: u32) -> u32 {
+        let r = rgba >> 24;
+        let g = (rgba >> 16) & 0xFF;
+        let b = (rgba >> 8) & 0xFF;
+        let a = rgba & 0xFF;
+        let k = (156_763 * r + 307_758 * g + 59_769 * b) >> 19;
+        let mut v = 0u32;
+        let mut shift = 0;
+        let mut cc = self.0;
+        while cc != 0 {
+            let nb = cc & 0x0F;
+            match (cc >> 4) & 0x0F {
+                0 => v |= (r >> (8 - nb)) << shift, // CRed
+                1 => v |= (g >> (8 - nb)) << shift, // CGreen
+                2 => v |= (b >> (8 - nb)) << shift, // CBlue
+                3 => v |= (k >> (8 - nb)) << shift, // CGrey
+                4 => v |= (a >> (8 - nb)) << shift, // CAlpha
+                _ => {}                             // CMap / CIgnore: not modeled
+            }
+            shift += nb;
+            cc >>= 8;
+        }
+        v
+    }
 }
 
 /// `chantostr`: channel pairs from the highest nonzero byte down; e.g.
@@ -184,6 +219,21 @@ mod tests {
         assert_eq!(Chan::RGB16.depth(), 16);
         assert_eq!(Chan::GREY8.depth(), 8);
         assert_eq!(Chan::GREY1.depth(), 1);
+    }
+
+    #[test]
+    fn rgbatoimg_converts_d_colors_per_memdraw() {
+        // DPaleyellow = 0xFFFFAAFF → x8r8g8b8 word 0x00FFFFAA: memory
+        // bytes (LE) come out [b g r x] = AA FF FF 00.
+        assert_eq!(Chan::XRGB32.rgbatoimg(0xFFFF_AAFF), 0x00FF_FFAA);
+        // DRed = 0xFF0000FF — red lands in bits 16..23.
+        assert_eq!(Chan::XRGB32.rgbatoimg(0xFF00_00FF), 0x00FF_0000);
+        // No alpha channel in x8r8g8b8: the low byte is dropped.
+        assert_eq!(Chan::XRGB32.rgbatoimg(0x1122_3344), 0x0011_2233);
+        // GREY1 DWhite: RGB2K(255,255,255)=254 → top bit of the byte.
+        assert_eq!(Chan::GREY1.rgbatoimg(0xFFFF_FFFF), 1);
+        // Short descriptor: same r/g/b placement without a 4th byte.
+        assert_eq!(Chan::RGB24.rgbatoimg(0x00FF_AAFF), 0x00FF_AA);
     }
 
     #[test]
