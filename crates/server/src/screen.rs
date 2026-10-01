@@ -469,6 +469,132 @@ fn load_char(
     Ok(())
 }
 
+/// drawchar glyph screen rect (devdraw.c:572): the font-image cell
+/// (fc.minx..maxx, fc.miny..maxy) mapped onto the baseline pen `p` with
+/// the font `ascent` — top = p.y − (ascent − fc.miny), left = p.x + left.
+fn glyph_rect(p: Point, fc: &FChar, ascent: u8) -> Rect {
+    let left = sx(p.x) + i32::from(fc.left);
+    let top = sx(p.y) - (i32::from(ascent) - i32::from(fc.miny));
+    Rect {
+        min: Point {
+            x: left as u32,
+            y: top as u32,
+        },
+        max: Point {
+            x: (left + (fc.maxx - fc.minx)) as u32,
+            y: (top + (i32::from(fc.maxy) - i32::from(fc.miny))) as u32,
+        },
+    }
+}
+
+/// 's' string / 'x' stringbg (devdraw.c:1273 + drawchar). Validation
+/// happens BEFORE any drawing: dst/src/bg/font-image lookups, then every
+/// glyph index (a bad index errors with the background still undrawn).
+/// The clipR replaces dst->clipr for the duration and is restored after
+/// (devdraw draws the string, then puts the old clipr back). Each glyph:
+/// mask = the font-image cell, src pattern from sp+(fc.left, fc.miny),
+/// then pen and sp advance by fc.width. The 'x' background rect is
+/// (p.x, p.y−ascent)…(p.x+Σwidth, p.y−ascent+Dy(font image)), painted
+/// before the glyphs as a plain opaque draw of the bg image.
+#[allow(clippy::too_many_arguments)]
+fn draw_string(
+    images: &mut HashMap<u32, Image>,
+    fonts: &HashMap<u32, FontData>,
+    dst_id: u32,
+    src_id: u32,
+    font_id: u32,
+    p: Point,
+    clip_r: Rect,
+    sp: Point,
+    bg: Option<(u32, Point)>,
+    indices: &[u16],
+) -> Result<(), String> {
+    if !images.contains_key(&dst_id) || !images.contains_key(&src_id) || !images.contains_key(&font_id)
+    {
+        return Err("unknown id for draw image".to_string());
+    }
+    if let Some((bg_id, _)) = bg {
+        if !images.contains_key(&bg_id) {
+            return Err("unknown id for draw image".to_string());
+        }
+    }
+    let font = fonts
+        .get(&font_id)
+        .ok_or_else(|| "image not a font".to_string())?;
+    if indices
+        .iter()
+        .any(|&ci| usize::from(ci) >= font.fchars.len())
+    {
+        return Err("character index out of range".to_string());
+    }
+
+    // Small per-op clones keep the borrow checker at bay: the src is
+    // usually a 1×1 repl tile and the font cache a few KB of GREY1/8.
+    let src = images[&src_id].clone();
+    let mask_img = images[&font_id].clone();
+    let bg_img = bg.map(|(bg_id, bg_pt)| (images[&bg_id].clone(), bg_pt));
+    let dst = images
+        .get_mut(&dst_id)
+        .ok_or_else(|| "unknown id for draw image".to_string())?;
+
+    if let Some((bg, bg_pt)) = bg_img {
+        let ascent = i32::from(font.ascent);
+        let sum_w: i32 = indices
+            .iter()
+            .map(|&ci| i32::from(font.fchars[usize::from(ci)].width))
+            .sum();
+        let bx = sx(p.x);
+        let by = sx(p.y) - ascent;
+        let r = Rect {
+            min: Point {
+                x: bx as u32,
+                y: by as u32,
+            },
+            max: Point {
+                x: (bx + sum_w) as u32,
+                y: (by + rect_dy(mask_img.rect)) as u32,
+            },
+        };
+        if bg.repl {
+            draw_tile_masked(dst, r, &bg, bg_pt, None);
+        } else {
+            let src_rect = Rect {
+                min: bg_pt,
+                max: point_add(bg_pt, rect_dx(r), rect_dy(r)),
+            };
+            compose_over_masked(dst, r, &bg, src_rect, None);
+        }
+    }
+
+    let ascent = font.ascent;
+    let saved_clip = dst.clipr;
+    dst.clipr = clip_r;
+    let mut pen = p;
+    let mut sp = sp;
+    for &ci in indices {
+        let fc = font.fchars[usize::from(ci)];
+        let r = glyph_rect(pen, &fc, ascent);
+        let src_pt = point_add(sp, i32::from(fc.left), i32::from(fc.miny));
+        draw_tile_masked(
+            dst,
+            r,
+            &src,
+            src_pt,
+            Some((
+                &mask_img,
+                Point {
+                    x: fc.minx as u32,
+                    y: fc.miny as u32,
+                },
+            )),
+        );
+        pen = point_add(pen, i32::from(fc.width), 0);
+        sp = point_add(sp, i32::from(fc.width), 0);
+    }
+    dst.clipr = saved_clip;
+    Ok(())
+}
+
 // --- the screen: image store + window host --------------------------------
 
 /// Client-visible screen. Single-threaded, driven by [`serve_stdio`].
@@ -771,8 +897,23 @@ impl Screen {
                 DrawCmd::LoadFont { font_id, src_id, index, r, sp, left, width } => {
                     load_char(&mut self.images, &mut self.fonts, font_id, src_id, index, r, sp, left, width)?;
                 }
-                DrawCmd::String { .. } | DrawCmd::StringBg { .. } => {
-                    // stages 3-4: accepted, not rasterized yet
+                DrawCmd::String { dst_id, src_id, font_id, p, clip_r, sp, indices } => {
+                    draw_string(
+                        &mut self.images,
+                        &self.fonts,
+                        dst_id,
+                        src_id,
+                        font_id,
+                        p,
+                        clip_r,
+                        sp,
+                        None,
+                        &indices,
+                    )?;
+                    dirty = true;
+                }
+                DrawCmd::StringBg { .. } => {
+                    // stage 4: accepted, not rasterized yet
                 }
                 DrawCmd::Ellipse { .. } | DrawCmd::Polygon { .. } | DrawCmd::FillPolygon { .. } => {
                     // arc/polygon raster: v0 gap
@@ -1512,5 +1653,164 @@ mod tests {
         // Nothing was drawn or recorded along the error paths.
         assert_eq!(fonts[&1].fchars[0], FChar::default());
         assert!(images[&1].pixels.iter().all(|&b| b == 0));
+    }
+
+    // --- fonts: 's' string (devdraw.c:1273 + drawchar) ---------------------
+
+    /// White 12×8 x8r8g8b8 canvas (a stand-in window body).
+    fn white_canvas(id: u32) -> Image {
+        make_image(
+            id,
+            rect_of(12, 8),
+            rect_of(12, 8),
+            Chan::XRGB32,
+            false,
+            0xFFFF_FFFF, // DWhite
+        )
+        .unwrap()
+    }
+
+    /// Two-glyph GREY1 font: cell 0 = 3×3 outline «H-ish» (cols 0,2 ink),
+    /// cell 1 = 3×3 solid block; rows 1..4 of an 8-wide image (0xAE rows).
+    fn two_glyph_font() -> (Image, FontData) {
+        let mut img = grey1_image(2);
+        for y in 1..4u32 {
+            img.pixels[y as usize * 2] = 0b1010_1110;
+        }
+        let font = FontData {
+            ascent: 2,
+            fchars: vec![
+                FChar { minx: 0, maxx: 3, miny: 1, maxy: 4, left: 0, width: 3 },
+                FChar { minx: 4, maxx: 7, miny: 1, maxy: 4, left: 0, width: 4 },
+            ],
+        };
+        (img, font)
+    }
+
+    fn xrgb_at(img: &Image, x: u32, y: u32) -> [u8; 4] {
+        let o = ((y as usize) * 12 + x as usize) * 4;
+        img.pixels[o..o + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn string_golden_hi_on_white_popixel() {
+        let mut images = HashMap::from([
+            (1, white_canvas(1)),
+            (2, two_glyph_font().0),
+            (
+                4,
+                make_image(4, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0x0000_00FF)
+                    .unwrap(),
+            ),
+        ]);
+        let fonts = HashMap::from([(2, two_glyph_font().1)]);
+        draw_string(
+            &mut images,
+            &fonts,
+            1,
+            4,
+            2,
+            Point { x: 2, y: 5 }, // baseline pen
+            rect_of(12, 8),
+            Point { x: 0, y: 0 },
+            None,
+            &[0, 1],
+        )
+        .unwrap();
+        let img = &images[&1];
+        let ink = [0x00, 0x00, 0x00, 0x00];
+        let white = [0xFF, 0xFF, 0xFF, 0x00];
+        for y in 0..8u32 {
+            for x in 0..12u32 {
+                // glyph 0 at (2,4)..(5,7), cols 0|2 of the cell inked;
+                // glyph 1 at (5,4)..(8,7), all cell cols inked; advance 3+4.
+                let want = match (x, y) {
+                    (2..=4, 4..=6) if x != 3 => ink,
+                    (5..=7, 4..=6) => ink,
+                    _ => white,
+                };
+                assert_eq!(xrgb_at(img, x, y), want, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn string_clipr_limits_drawing_and_is_restored() {
+        let mut images = HashMap::from([
+            (1, white_canvas(1)),
+            (2, two_glyph_font().0),
+            (
+                4,
+                make_image(4, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0x0000_00FF)
+                    .unwrap(),
+            ),
+        ]);
+        let fonts = HashMap::from([(2, two_glyph_font().1)]);
+        let clip = Rect { min: Point { x: 4, y: 0 }, max: Point { x: 8, y: 8 } };
+        draw_string(
+            &mut images, &fonts, 1, 4, 2, Point { x: 2, y: 5 }, clip, Point { x: 0, y: 0 }, None, &[0, 1],
+        )
+        .unwrap();
+        let img = &images[&1];
+        // Glyph 0 starts left of the clip: its x=2 column stays white, the
+        // x=4 column (cell col 2, inked) is inside the clip and drawn.
+        assert_eq!(xrgb_at(img, 2, 4), [0xFF, 0xFF, 0xFF, 0x00]);
+        assert_eq!(xrgb_at(img, 4, 4), [0x00, 0x00, 0x00, 0x00]);
+        // Glyph 1 (x 5..8) fits the clip and is drawn.
+        assert_eq!(xrgb_at(img, 5, 4), [0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(xrgb_at(img, 7, 4), [0x00, 0x00, 0x00, 0x00]);
+        // clipr restored after the command.
+        assert_eq!(img.clipr, rect_of(12, 8));
+    }
+
+    #[test]
+    fn string_bad_index_draws_nothing() {
+        let mut images = HashMap::from([
+            (1, white_canvas(1)),
+            (2, two_glyph_font().0),
+            (
+                4,
+                make_image(4, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0x0000_00FF)
+                    .unwrap(),
+            ),
+        ]);
+        let fonts = HashMap::from([(2, two_glyph_font().1)]);
+        let err = draw_string(
+            &mut images, &fonts, 1, 4, 2, Point { x: 2, y: 5 }, rect_of(12, 8), Point { x: 0, y: 0 },
+            None, &[0, 9], // 9 out of range AFTER a valid glyph
+        )
+        .unwrap_err();
+        assert_eq!(err, "character index out of range");
+        // The whole command failed before drawing: canvas untouched.
+        assert!(images[&1].pixels.iter().all(|&b| b == 0xFF || b == 0x00));
+        assert!(
+            images[&1]
+                .pixels
+                .chunks_exact(4)
+                .all(|p| p == [0xFF, 0xFF, 0xFF, 0x00])
+        );
+        assert_eq!(images[&1].clipr, rect_of(12, 8));
+    }
+
+    #[test]
+    fn string_without_a_font_is_image_not_a_font() {
+        let mut images = HashMap::from([(1, white_canvas(1)), (2, two_glyph_font().0)]);
+        let fonts = HashMap::new();
+        assert_eq!(
+            draw_string(
+                &mut images, &fonts, 1, 1, 2, Point { x: 0, y: 0 }, rect_of(12, 8),
+                Point { x: 0, y: 0 }, None, &[0],
+            )
+            .unwrap_err(),
+            "image not a font"
+        );
+        assert_eq!(
+            draw_string(
+                &mut images, &fonts, 1, 1, 9, Point { x: 0, y: 0 }, rect_of(12, 8),
+                Point { x: 0, y: 0 }, None, &[0],
+            )
+            .unwrap_err(),
+            "unknown id for draw image"
+        );
     }
 }
