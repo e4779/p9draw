@@ -138,6 +138,16 @@ mod tests {
             op_letter(&DrawCmd::WritePixels { id: 1, r: rect(0, 0, 1, 1), data: vec![] }),
             "y"
         );
+        // Uppercase wire letters survive verbatim ('Y' is the compressed
+        // writeimage acme uses for its GREY1 glyph images).
+        assert_eq!(
+            op_letter(&DrawCmd::WriteCompressed { id: 1, r: rect(0, 0, 1, 1), data: vec![7] }),
+            "Y"
+        );
+        assert_eq!(
+            line(&DrawCmd::WriteCompressed { id: 1, r: rect(0, 0, 1, 1), data: vec![7] }),
+            "cmd op=Y id=1 rect=(0,0)-(1,1) bytes=1"
+        );
         // Font ops: the letters devdraw.c dispatches on (885/991/1273).
         assert_eq!(op_letter(&DrawCmd::InitFont { font_id: 9, nchars: 4, ascent: 7 }), "i");
         assert_eq!(
