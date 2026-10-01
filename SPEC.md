@@ -257,8 +257,8 @@ Payload начинается с offset 6. Порядок полей — поря
 | `'x'` | stringbg | 59+2·ni | как `'s'` + `bgid[4]` @47, `bgpt[8]` @51 |
 | `'t'` | top/bottom | 4+4·nw | `top[1]` @1, `nw[2]` @2, `nw×id[4]` |
 | `'v'` | flush | 1 | — |
-| `'y'` | write pixels | 21+data | `id[4]`, `R[16]` @5, `data[…]` (memload) |
-| `'Y'` | write compressed | 21+data | как `'y'`, данные в сжатом формате image |
+| `'y'` | write pixels | 21+data | `id[4]`, `R[16]` @5, `data[…]` — ровно `bytesperline(R,depth)·Dy(R)` байт (memload: libmemdraw/load.c:14-17, devdraw.c:1425 `m += y`); depth — канал image из `'b'` этого же потока, иначе v0-fallback: хвост payload |
+| `'Y'` | write compressed | 21+data | как `'y'`, данные в сжатом формате image; v0: длина выводится только декодированием → data = хвост payload, acme шлёт `'Y'` последней командой |
 
 `'m'` (create image mask) в коде **закомментирован** — не реализован.
 

@@ -162,7 +162,7 @@ fn run() -> i32 {
     let mut glyph_rows = vec![0u8; 32]; // 16 px wide GREY1 ⇒ 2 B/row
     for row in 4..12 {
         glyph_rows[row * 2] = 0xF0; // x0..3 inked
-        glyph_rows[row * 2 + 1] = 0x0F; // x8..11 inked
+        glyph_rows[row * 2 + 1] = 0xF0; // x8..11 inked (MSB-first, like byte 0)
     }
     let text = encode_drawcmds(&[
         DrawCmd::Allocate {

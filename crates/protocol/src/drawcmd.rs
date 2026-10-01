@@ -9,8 +9,13 @@
 //! * 'q'/'n'/'N'/'t' — an explicit element count up front,
 //! * 's'/'x' — an explicit rune-index count,
 //! * 'p'/'P' — variable-length drawcoord vertices,
-//! * 'y'/'Y' — pixel data runs to the end of the payload (devdraw.c hands
-//!   memload the whole rest of the write buffer: memload(dst, r, a+m, n-m)).
+//! * 'y' — exactly bytesperline(R, depth)·Dy(R) pixel bytes: devdraw.c:1425
+//!   advances by what memload consumed (libmemdraw/load.c:14-17), so the
+//!   next command starts right after. The depth comes from the 'b'
+//!   allocimage ops of the same stream, with a tail-of-payload fallback for
+//!   images allocated in earlier Twrdraws (v0, SPEC.md §6).
+//! * 'Y' — pixel data runs to the end of the payload (v0: the compressed
+//!   wire length is only knowable by decompressing; acme sends 'Y' last).
 //!
 //! The decoder validates layout only. Cross-field policies devdraw enforces
 //! (window repl/chan consistency in 'b', rectinrect for 'r', non-empty
@@ -22,6 +27,8 @@
 //! n+1 drawcoord vertices accumulated from (0, 0). The p0 the C code reads
 //! at a+31 is overwritten by the first vertex before use, so no absolute
 //! p0 exists on the wire (SPEC.md §6 documents that dead read).
+
+use std::collections::HashMap;
 
 use crate::{Point, ProtocolError, Rect};
 
@@ -219,8 +226,12 @@ pub enum DrawCmd {
 pub fn parse_drawcmds(payload: &[u8]) -> Result<Vec<DrawCmd>, ProtocolError> {
     let mut cmds = Vec::new();
     let mut off = 0;
+    // 'y' needs the target image's depth to size its pixel rows exactly
+    // (devdraw keeps the whole image table server-side); the parser is
+    // stateless, so it tracks the 'b' declarations of the same stream.
+    let mut chans: HashMap<u32, u32> = HashMap::new();
     while off < payload.len() {
-        let (cmd, next) = parse_one(payload, off)?;
+        let (cmd, next) = parse_one(payload, off, &mut chans)?;
         cmds.push(cmd);
         off = next;
     }
@@ -247,6 +258,26 @@ fn le_rect(buf: &[u8], at: usize) -> Rect {
         min: le_point(buf, at),
         max: le_point(buf, at + 8),
     }
+}
+
+/// Channel bit depth from the wire descriptor — mirrors `render::Chan::depth`
+/// (`chantodepth`): descriptor bytes high→low, zero bytes skipped, the low
+/// nibble of each is the channel width in bits.
+fn chan_depth(desc: u32) -> u32 {
+    (0..4)
+        .map(|i| (desc >> (24 - 8 * i)) as u8)
+        .filter(|&b| b != 0)
+        .map(|b| (b & 0x0f) as u32)
+        .sum()
+}
+
+/// bytesperline(R, depth)·Dy(R) — packed rect-relative rows, the layout
+/// render's write_bytes consumes as one 'y' payload (memload, load.c:14).
+/// A malformed rect yields a huge usize and the `need` check rejects it.
+fn y_row_bytes(r: &Rect, depth: u32) -> i32 {
+    let dx = (r.max.x as i32).wrapping_sub(r.min.x as i32);
+    let dy = (r.max.y as i32).wrapping_sub(r.min.y as i32);
+    (dx * depth as i32 + 7) / 8 * dy
 }
 
 /// Layout guard: size bytes must remain at off (counting the op byte).
@@ -316,7 +347,11 @@ fn drawcoord(
 
 /// Parse the single command starting at off; returns it and the offset just
 /// past its last byte.
-fn parse_one(buf: &[u8], off: usize) -> Result<(DrawCmd, usize), ProtocolError> {
+fn parse_one(
+    buf: &[u8],
+    off: usize,
+    chans: &mut HashMap<u32, u32>,
+) -> Result<(DrawCmd, usize), ProtocolError> {
     let op = buf[off];
     let id = |at: usize| le32(buf, off + at);
     let pt = |at: usize| le_point(buf, off + at);
@@ -324,12 +359,16 @@ fn parse_one(buf: &[u8], off: usize) -> Result<(DrawCmd, usize), ProtocolError> 
     Ok(match op {
         b'b' => {
             need(buf, off, 51)?;
+            let wid = id(1);
+            let chan = id(10);
+            // remember the depth for a later 'y' in the same stream
+            chans.insert(wid, chan);
             (
                 DrawCmd::Allocate {
-                    id: id(1),
+                    id: wid,
                     screen_id: le16(buf, off + 5),
                     refresh: buf[off + 9],
-                    chan: id(10),
+                    chan,
                     repl: buf[off + 14],
                     r: rect(15),
                     clip_r: rect(31),
@@ -605,20 +644,39 @@ fn parse_one(buf: &[u8], off: usize) -> Result<(DrawCmd, usize), ProtocolError> 
         }
         b'y' | b'Y' => {
             need(buf, off, 21)?;
-            let cmd = if op == b'y' {
-                DrawCmd::WritePixels {
-                    id: id(1),
-                    r: rect(5),
-                    data: buf[off + 21..].to_vec(),
-                }
-            } else {
-                DrawCmd::WriteCompressed {
-                    id: id(1),
-                    r: rect(5),
-                    data: buf[off + 21..].to_vec(),
-                }
+            let wid = id(1);
+            let r = rect(5);
+            if op == b'Y' {
+                // v0: the compressed stream's wire length is only knowable
+                // by decompressing it, so it keeps devdraw's tail semantics
+                // (SPEC.md §6) — clients send 'Y' as the last op, like acme.
+                return Ok((
+                    DrawCmd::WriteCompressed {
+                        id: wid,
+                        r,
+                        data: buf[off + 21..].to_vec(),
+                    },
+                    buf.len(),
+                ));
+            }
+            // 'y': memload consumes exactly bytesperline(R, depth)·Dy(R)
+            // (libmemdraw/load.c:14-17, devdraw.c:1425 `m += y`) and the
+            // stream continues with the next command.
+            let len = match chans.get(&wid) {
+                Some(&desc) => y_row_bytes(&r, chan_depth(desc)) as usize,
+                // v0 fallback: image allocated in an earlier Twrdraw — the
+                // parser has no depth for it, consume the tail (SPEC.md §6).
+                None => buf.len() - (off + 21),
             };
-            (cmd, buf.len())
+            need(buf, off, 21 + len)?;
+            (
+                DrawCmd::WritePixels {
+                    id: wid,
+                    r,
+                    data: buf[off + 21..off + 21 + len].to_vec(),
+                },
+                off + 21 + len,
+            )
         }
         _ => return Err(ProtocolError::UnknownDrawCmd { op, offset: off }),
     })
@@ -987,6 +1045,54 @@ mod tests {
             }
             other => panic!("expected Allocate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn y_takes_exact_rows_when_depth_is_in_stream() {
+        // devdraw.c:1425 advances by what memload consumed — exactly
+        // bytesperline(R, depth)·Dy(R) (libmemdraw/load.c:14-17). A 'y'
+        // whose image was allocated earlier in the SAME stream must not
+        // swallow the commands that follow it (broke the e2e text step:
+        // 'l'/'x'/'v' after 'y' never ran).
+        let mut stream = vec![b'b'];
+        stream.extend(u32le(5));
+        stream.extend([0, 0, 0, 0]);
+        stream.push(0); // refresh
+        stream.extend(u32le(0x6808_1828)); // x8r8g8b8
+        stream.push(0); // repl
+        stream.extend(rect(0, 0, 4, 2));
+        stream.extend(rect(0, 0, 4, 2));
+        stream.extend(u32le(0));
+        let pixels: Vec<u8> = (0..32).collect(); // 4·2·4 bytes
+        stream.push(b'y');
+        stream.extend(u32le(5));
+        stream.extend(rect(0, 0, 4, 2));
+        stream.extend(pixels.iter().copied());
+        stream.push(b'v'); // must survive, not be eaten by 'y'
+        let cmds = parse_drawcmds(&stream).expect("parses");
+        assert_eq!(cmds.len(), 3, "b, y, v");
+        match &cmds[1] {
+            DrawCmd::WritePixels { id: 5, r, data } => {
+                assert_eq!(*r, wire_rect(0, 0, 4, 2));
+                assert_eq!(data, &pixels, "exactly rows, no tail");
+            }
+            other => panic!("expected WritePixels, got {other:?}"),
+        }
+        assert_eq!(cmds[2], DrawCmd::Flush);
+        assert_eq!(encode_drawcmds(&cmds), stream, "identity");
+    }
+
+    #[test]
+    fn y_without_in_stream_depth_falls_back_to_tail() {
+        // v0: an image allocated in an earlier Twrdraw has no depth in this
+        // stateless parser — the payload tail is consumed (SPEC.md §6).
+        let mut stream = vec![b'y'];
+        stream.extend(u32le(9));
+        stream.extend(rect(0, 0, 2, 1));
+        stream.extend([1, 2, 3, 4, 5, 6, 7, 8]);
+        stream.push(b'v');
+        let cmds = parse_drawcmds(&stream).expect("parses");
+        assert_eq!(cmds.len(), 1, "tail fallback keeps old behavior");
     }
 
     #[test]

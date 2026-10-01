@@ -1309,6 +1309,78 @@ mod tests {
     use super::*;
     use p9draw_protocol::{Point, Rect, Wsysmsg, decode, encode};
 
+    // Headless regression for the e2e text step (SPEC.md §6 'y'/'x'):
+    // the stream keeps every command after 'y', and stringbg paints the
+    // full bg rect white before the glyph run (devdraw.c:1317-1334).
+    #[test]
+    fn stringbg_text_step_headless() {
+        use p9draw_protocol::{DrawCmd, encode_drawcmds};
+        let rect = |x: u32, y: u32, w: u32, h: u32| Rect {
+            min: Point { x, y },
+            max: Point { x: x + w, y: y + h },
+        };
+        let font_rect = rect(0, 0, 16, 16);
+        let full = rect(0, 0, 120, 90);
+        let mut glyph_rows = vec![0u8; 32];
+        for row in 4..12 {
+            glyph_rows[row * 2] = 0xF0;
+            glyph_rows[row * 2 + 1] = 0xF0; // x8..11 inked (MSB-first GREY1)
+        }
+        let text = encode_drawcmds(&[
+            DrawCmd::Allocate { id: 2, screen_id: 0, refresh: 0, chan: Chan::GREY1.0, repl: 0, r: font_rect, clip_r: font_rect, value: 0 },
+            DrawCmd::InitFont { font_id: 2, nchars: 2, ascent: 10 },
+            DrawCmd::Allocate { id: 3, screen_id: 0, refresh: 0, chan: Chan::GREY1.0, repl: 0, r: font_rect, clip_r: font_rect, value: 0 },
+            DrawCmd::WritePixels { id: 3, r: font_rect, data: glyph_rows.clone() },
+            DrawCmd::LoadFont { font_id: 2, src_id: 3, index: 0, r: rect(0, 4, 4, 12), sp: Point { x: 0, y: 4 }, left: 0, width: 4 },
+            DrawCmd::LoadFont { font_id: 2, src_id: 3, index: 1, r: rect(8, 4, 12, 12), sp: Point { x: 8, y: 4 }, left: 0, width: 4 },
+            DrawCmd::Allocate { id: 4, screen_id: 0, refresh: 0, chan: Chan::XRGB32.0, repl: 1, r: rect(0, 0, 1, 1), clip_r: rect(0, 0, 1, 1), value: 0x0000_00FF },
+            DrawCmd::Allocate { id: 5, screen_id: 0, refresh: 0, chan: Chan::XRGB32.0, repl: 1, r: rect(0, 0, 1, 1), clip_r: rect(0, 0, 1, 1), value: 0xFFFF_FFFF },
+            DrawCmd::StringBg { dst_id: 0, src_id: 4, font_id: 2, p: Point { x: 10, y: 16 }, clip_r: full, sp: Point { x: 0, y: 0 }, bg_id: 5, bg_pt: Point { x: 0, y: 0 }, indices: vec![0, 1] },
+            DrawCmd::Flush,
+        ]);
+        // 'y' must take exactly its rows and leave the later ops parseable
+        // (regression: 'y' used to swallow the stream tail, so 'l'/'x'/'v'
+        // never ran and the bg rect stayed paleyellow).
+        let cmds = p9draw_protocol::parse_drawcmds(&text).expect("parse");
+        assert_eq!(cmds.len(), 10, "b,i,b,y,l,l,b,b,x,v");
+        match &cmds[3] {
+            p9draw_protocol::DrawCmd::WritePixels { data, .. } => assert_eq!(data.len(), 32),
+            other => panic!("expected WritePixels, got {other:?}"),
+        }
+        let mut images = HashMap::new();
+        images.insert(0, make_image(0, full, full, Chan::XRGB32, false, 0xFFFF_AAFF).unwrap());
+        images.insert(2, make_image(2, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        images.insert(3, make_image(3, font_rect, font_rect, Chan::GREY1, false, 0).unwrap());
+        write_bytes(images.get_mut(&3).unwrap(), font_rect, &glyph_rows).unwrap();
+        images.insert(4, make_image(4, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::XRGB32, true, 0x0000_00FF).unwrap());
+        images.insert(5, make_image(5, rect(0, 0, 1, 1), rect(0, 0, 1, 1), Chan::XRGB32, true, 0xFFFF_FFFF).unwrap());
+        let mut fonts = HashMap::new();
+        init_font(&images, &[], &mut fonts, 2, 2, 10).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 0, rect(0, 4, 4, 12), Point { x: 0, y: 4 }, 0, 4).unwrap();
+        load_char(&mut images, &mut fonts, 2, 3, 1, rect(8, 4, 12, 12), Point { x: 8, y: 4 }, 0, 4).unwrap();
+        let scr0 = &images[&0];
+        let at0 = |img: &Image, x: u32, y: u32| {
+            let bpl = 120usize * 4;
+            let o = y as usize * bpl + x as usize * 4;
+            [img.pixels[o], img.pixels[o + 1], img.pixels[o + 2], img.pixels[o + 3]]
+        };
+        let pale0 = at0(scr0, 8, 4);
+        draw_string(&mut images, &fonts, 0, 4, 2, Point { x: 10, y: 16 }, full, Point { x: 0, y: 0 }, Some((5, Point { x: 0, y: 0 })), &[0, 1]).unwrap();
+        let scr = &images[&0];
+        let at = |x: u32, y: u32| at0(scr, x, y);
+        let white = images[&5].pixels.clone();
+        let black = images[&4].pixels.clone();
+        assert_eq!(at(10, 6), white[..4], "bg-rect min corner white");
+        assert_eq!(at(17, 6), white[..4], "bg-rect max-x column white");
+        assert_eq!(at(10, 21), white[..4], "bg-rect last row white");
+        assert_eq!(at(17, 21), white[..4]);
+        assert_eq!(at(10, 10), black[..4], "glyph 0 cell black");
+        assert_eq!(at(13, 17), black[..4]);
+        assert_eq!(at(14, 10), black[..4], "glyph 1 cell black (MSB-first bits)");
+        assert_eq!(at(17, 17), black[..4]);
+        assert_eq!(at(8, 4), pale0, "surround stays paleyellow");
+    }
+
     // --- winsize (SPEC.md §2.4 parsewinsize) ------------------------------
 
     #[test]
