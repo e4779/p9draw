@@ -6,5 +6,8 @@ description = "Observation tooling for the plan9port devdraw wire protocol: unix
 
 [dependencies]
 p9draw-protocol = { path = "../protocol" }
+p9draw-render = { path = "../render" }
+p9draw-host = { path = "../host" }
 
-# std only by design (unix sockets): no external crates.
+# screen.rs logic is std-only; p9draw-host pulls winit/softbuffer for the
+# real window (needed by the serve subcommand only).

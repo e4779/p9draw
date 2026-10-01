@@ -996,7 +996,9 @@ dependencies = [
 name = "p9draw-server"
 version = "0.1.0"
 dependencies = [
+ "p9draw-host",
  "p9draw-protocol",
+ "p9draw-render",
 ]
 
 [[package]]

@@ -24,6 +24,10 @@
 #   P9DRAW_CAPTURE unset or 0 -> `exec devdraw.real "$@"` (zero change).
 #   P9DRAW_CAPTURE=1          -> MITM; dumps+log in $P9DRAW_CAPTURE_DIR
 #                                (default ${TMPDIR:-/tmp}/p9draw-capture-$$).
+#   P9DRAW_SERVE=1            -> p9draw-server IS devdraw (final glue):
+#                                drawfcall on stdin/stdout, acme renders
+#                                into a real p9draw window; devdraw.real
+#                                is not started at all.
 #
 # OPEN (SPEC.md section 8, OPEN-1): nobody inside plan9port sets $wsysid;
 # the lifecycle of `devdraw -s` (who starts it, when it exits) belongs to
@@ -51,6 +55,24 @@ die() {
     echo "devdraw wrapper: $*" >&2
     exit 1
 }
+
+# --- serve mode: p9draw-server replaces devdraw entirely ------------------
+# Legacy pipe transport: the client fork+execs us with the protocol on
+# fds 0/1; `serve` reads drawfcall from stdin and writes replies to
+# stdout, rendering into a real local window.
+if [ "${P9DRAW_SERVE:-0}" = "1" ]; then
+    SERVER="${P9DRAW_SERVER:-}"
+    if [ -z "$SERVER" ]; then
+        SERVER="$DIR/p9draw-server"
+    fi
+    if [ ! -x "$SERVER" ]; then
+        SERVER=$(command -v p9draw-server 2>/dev/null) || true
+    fi
+    if [ -z "${SERVER:-}" ] || [ ! -x "$SERVER" ]; then
+        die "p9draw-server not found; build it and set P9DRAW_SERVER"
+    fi
+    exec "$SERVER" serve
+fi
 
 [ -x "$REAL" ] || die "real binary missing: $REAL (see install steps in the header)"
 

@@ -3,9 +3,12 @@
 //! p9draw-protocol, never hand-rolled.
 //!
 //! Subcommands (details in USAGE):
-//! - `serve` — unix-socket accept loop; every incoming frame is decoded
-//!   and logged (no replies: this is the observation half of the future
-//!   full server, ARCHITECTURE.md).
+//! - `serve` — devdraw replacement on the legacy pipe (SPEC.md §2.1):
+//!   drawfcall in on stdin, replies out on stdout, acme renders into a
+//!   real local window (screen.rs — the final glue).
+//! - `observe` — unix-socket accept loop; every incoming frame is decoded
+//!   and logged (no replies: the observation half of the full server,
+//!   ARCHITECTURE.md).
 //! - `capture` — MITM between a client and the real server unix socket;
 //!   raw bytes are forwarded unchanged in both directions while frames
 //!   are decoded, logged and dumped per direction (c2s.bin / s2c.bin).
@@ -18,6 +21,7 @@ mod frameread;
 mod logfmt;
 mod net;
 mod pump;
+mod screen;
 mod serve;
 
 use std::path::PathBuf;
@@ -30,7 +34,13 @@ const USAGE: &str = "\
 p9draw-server — drawfcall traffic tools (SPEC.md)
 
 usage:
-  p9draw-server serve --socket PATH [--log-file PATH]
+  p9draw-server serve [--log-file PATH]
+      devdraw replacement, legacy pipe transport (SPEC.md 2.1): reads the
+      client's drawfcall stream from stdin, writes replies to stdout and
+      renders acme into a real local window (screen.rs). Logging goes to
+      stderr by default -- stdout carries the protocol bytes.
+
+  p9draw-server observe --socket PATH [--log-file PATH]
       accept loop on a unix socket; every incoming drawfcall frame is
       decoded and logged (observation only, no replies).
 
@@ -63,6 +73,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     };
     match sub.as_str() {
         "serve" => cmd_serve(rest),
+        "observe" => cmd_observe(rest),
         "capture" => cmd_capture(rest),
         "capture-pipe" => cmd_capture_pipe(rest),
         "-h" | "--help" | "help" => {
@@ -73,7 +84,24 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     }
 }
 
+/// `serve`: our binary replaces devdraw on the legacy pipe (screen.rs).
 fn cmd_serve(args: &[String]) -> Result<ExitCode, String> {
+    let mut log_file = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--log-file" => log_file = Some(next_value(&mut it, "--log-file")?),
+            other => return Err(format!("serve: unexpected argument {other:?}")),
+        }
+    }
+    // Default log target is stderr: stdout carries the drawfcall stream.
+    let logger = make_logger(&log_file, Logger::stderr)?;
+    screen::serve_stdio(logger).map_err(|e| format!("serve: {e}"))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Former `serve`, renamed: unix-socket observation loop (no replies).
+fn cmd_observe(args: &[String]) -> Result<ExitCode, String> {
     let mut socket = None;
     let mut log_file = None;
     let mut it = args.iter();
@@ -81,12 +109,12 @@ fn cmd_serve(args: &[String]) -> Result<ExitCode, String> {
         match arg.as_str() {
             "--socket" => socket = Some(next_value(&mut it, "--socket")?),
             "--log-file" => log_file = Some(next_value(&mut it, "--log-file")?),
-            other => return Err(format!("serve: unexpected argument {other:?}")),
+            other => return Err(format!("observe: unexpected argument {other:?}")),
         }
     }
-    let socket = socket.ok_or("serve: --socket is required")?;
+    let socket = socket.ok_or("observe: --socket is required")?;
     let logger = make_logger(&log_file, Logger::stdout)?;
-    serve::run_serve(&socket, logger).map_err(|e| format!("serve: {e}"))?;
+    serve::run_serve(&socket, logger).map_err(|e| format!("observe: {e}"))?;
     Ok(ExitCode::SUCCESS)
 }
 
