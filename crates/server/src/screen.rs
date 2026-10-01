@@ -366,6 +366,68 @@ fn info_line(clientid: u32, infoid: u32, chan: &str, repl: u32, r: Rect, clipr: 
     s
 }
 
+// --- font ops ('i'/'l'/'s'/'x', devdraw.c:885/991/1273) --------------------
+
+/// One cached glyph (devdraw.h FChar): the cell in the font image plus
+/// the per-char metrics the client sends with 'l'. Glyph BITS live in
+/// the font's image; only these metrics are stored server-side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct FChar {
+    /// Cell left/right edge in font-image coordinates (wire R, signed).
+    minx: i32,
+    maxx: i32,
+    /// Cell top/bottom edge (wire R truncated to u8, like devdraw's
+    /// uchar fields).
+    miny: u8,
+    maxy: u8,
+    /// Draw offset from the pen x (wire i8).
+    left: i8,
+    /// Pen advance in pixels (wire u8).
+    width: u8,
+}
+
+/// Client-initialized font ('i'): the metrics header plus the glyph table
+/// that 'l' fills. The table is per-image-id (the image IS the glyph
+/// raster); devdraw reallocates it on every 'i' (fontresize).
+#[derive(Debug, Clone)]
+struct FontData {
+    ascent: u8,
+    fchars: Vec<FChar>,
+}
+
+/// 'i' initfont (devdraw.c:885): turn an existing image into a font.
+/// Canonical devdraw errors, in devdraw's check order; re-initializing
+/// an id is legal — the old glyph table is forgotten.
+fn init_font(
+    images: &HashMap<u32, Image>,
+    windows: &[u32],
+    fonts: &mut HashMap<u32, FontData>,
+    font_id: u32,
+    nchars: u32,
+    ascent: u8,
+) -> Result<(), String> {
+    if font_id == 0 {
+        return Err("can't use display as font".to_string());
+    }
+    if !images.contains_key(&font_id) {
+        return Err("unknown id for draw image".to_string());
+    }
+    if windows.contains(&font_id) {
+        return Err("can't use window as font".to_string());
+    }
+    if nchars == 0 || nchars > 4096 {
+        return Err("bad font size (4096 chars max)".to_string());
+    }
+    fonts.insert(
+        font_id,
+        FontData {
+            ascent,
+            fchars: vec![FChar::default(); nchars as usize],
+        },
+    );
+    Ok(())
+}
+
 // --- the screen: image store + window host --------------------------------
 
 /// Client-visible screen. Single-threaded, driven by [`serve_stdio`].
@@ -401,6 +463,8 @@ pub struct Screen {
     snarf: String,
     /// current window size in physical pixels (image 0 geometry).
     win: (u32, u32),
+    /// 'i'-initialized fonts by image id (glyph metrics; bits in the image).
+    fonts: HashMap<u32, FontData>,
 }
 
 impl Screen {
@@ -435,6 +499,7 @@ impl Screen {
             clientid: 1,
             snarf: String::new(),
             win: (w, h),
+            fonts: HashMap::new(),
         };
         let img = Image::new(0, rect_of(w, h), SCREEN_CHAN)
             .map_err(|e| format!("screen image: {e}"))?;
@@ -487,6 +552,8 @@ impl Screen {
                     }
                     let img = make_image(id, r, clip_r, Chan(chan), repl != 0, value)?;
                     self.images.insert(id, img);
+                    // a reused id leaves no stale font behind
+                    self.fonts.remove(&id);
                     if screen_id != 0 {
                         self.windows.retain(|w| *w != id);
                         self.windows.push(id);
@@ -584,6 +651,7 @@ impl Screen {
                         return Err("unknown id for draw image".to_string());
                     }
                     self.images.remove(&id);
+                    self.fonts.remove(&id);
                     self.windows.retain(|w| *w != id);
                 }
                 DrawCmd::FreeScreen { id } => {
@@ -656,12 +724,11 @@ impl Screen {
                 DrawCmd::Flush => {
                     dirty = true;
                 }
-                DrawCmd::InitFont { .. }
-                | DrawCmd::LoadFont { .. }
-                | DrawCmd::String { .. }
-                | DrawCmd::StringBg { .. } => {
-                    // fonts: accepted, nothing rasterized (v0 gap — acme
-                    // text stays invisible until a font raster lands)
+                DrawCmd::InitFont { font_id, nchars, ascent } => {
+                    init_font(&self.images, &self.windows, &mut self.fonts, font_id, nchars, ascent)?;
+                }
+                DrawCmd::LoadFont { .. } | DrawCmd::String { .. } | DrawCmd::StringBg { .. } => {
+                    // stages 2-4: accepted, not rasterized yet
                 }
                 DrawCmd::Ellipse { .. } | DrawCmd::Polygon { .. } | DrawCmd::FillPolygon { .. } => {
                     // arc/polygon raster: v0 gap
@@ -1231,5 +1298,73 @@ mod tests {
             Wsysmsg::Rrdmouse { buttons, .. } => assert_eq!(buttons, 5),
             other => panic!("wrong message: {other:?}"),
         }
+    }
+
+    // --- fonts: 'i' initfont (devdraw.c:885) ------------------------------
+
+    /// A GREY1 stand-in for acme's cache image ('b' then 'i').
+    fn grey1_image(id: u32) -> Image {
+        make_image(id, rect_of(16, 16), rect_of(16, 16), Chan::GREY1, false, 0).unwrap()
+    }
+
+    fn one_image(id: u32) -> HashMap<u32, Image> {
+        HashMap::from([(id, grey1_image(id))])
+    }
+
+    #[test]
+    fn init_font_creates_a_zeroed_glyph_table() {
+        let images = one_image(1);
+        let mut fonts = HashMap::new();
+        init_font(&images, &[], &mut fonts, 1, 4, 11).unwrap();
+        let f = &fonts[&1];
+        assert_eq!(f.ascent, 11);
+        assert_eq!(f.fchars.len(), 4);
+        assert!(f.fchars.iter().all(|fc| *fc == FChar::default()));
+    }
+
+    #[test]
+    fn init_font_errors_are_verbatim_devdraw_strings() {
+        let mut fonts = HashMap::new();
+        // id 0 is the display.
+        assert_eq!(
+            init_font(&one_image(1), &[], &mut fonts, 0, 4, 11).unwrap_err(),
+            "can't use display as font"
+        );
+        // The image must exist.
+        assert_eq!(
+            init_font(&HashMap::new(), &[], &mut fonts, 7, 4, 11).unwrap_err(),
+            "unknown id for draw image"
+        );
+        // Window images (screen_id != 0 'b's) are off limits.
+        assert_eq!(
+            init_font(&one_image(1), &[1], &mut fonts, 1, 4, 11).unwrap_err(),
+            "can't use window as font"
+        );
+        // devdraw caps the table at 4096 glyphs; 0 is also bad.
+        assert_eq!(
+            init_font(&one_image(1), &[], &mut fonts, 1, 0, 11).unwrap_err(),
+            "bad font size (4096 chars max)"
+        );
+        assert_eq!(
+            init_font(&one_image(1), &[], &mut fonts, 1, 4097, 11).unwrap_err(),
+            "bad font size (4096 chars max)"
+        );
+        // 4096 exactly is the legal ceiling.
+        init_font(&one_image(1), &[], &mut fonts, 1, 4096, 11).unwrap();
+        assert_eq!(fonts[&1].fchars.len(), 4096);
+    }
+
+    #[test]
+    fn init_font_reinit_forgets_old_glyphs() {
+        // The client re-sends 'i' on fontresize; devdraw reallocates.
+        let images = one_image(1);
+        let mut fonts = HashMap::new();
+        init_font(&images, &[], &mut fonts, 1, 2, 11).unwrap();
+        fonts.get_mut(&1).unwrap().fchars[0].width = 9;
+        init_font(&images, &[], &mut fonts, 1, 3, 12).unwrap();
+        let f = &fonts[&1];
+        assert_eq!(f.ascent, 12);
+        assert_eq!(f.fchars.len(), 3);
+        assert_eq!(f.fchars[0], FChar::default());
     }
 }
