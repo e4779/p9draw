@@ -11,10 +11,15 @@
 //!                 `'v'` flush in the same stream (count = 45+1 = 46,
 //!                 like the live capture): paleyellow composes over the
 //!                 whole screen
-//!   4. readback — Twrdraw `'r'` (image 0, full rect), then Trddraw →
-//!                 Rrddraw; the bytes must equal the render-semantics
-//!                 expectation [B,G,R,X] = AA FF FF 00 per pixel
-//!   5. mouse    — Tbouncemouse (synthetic event) then Trdmouse →
+//!   4. text     — Twrdraw font setup ('b' GREY1 cache image + 'i',
+//!                 'b' GREY1 bits + 'y' pixels, two 'l' glyph loads,
+//!                 'b' black/white 1×1 repl tiles) then one 'x'
+//!                 stringbg over image 0 + 'v'
+//!   5. readback — Twrdraw 'r' (image 0, the text region), then Trddraw
+//!                 → Rrddraw; the bytes must show the background rect
+//!                 (exactly Σwidth×Dy(font image) at the baseline), the
+//!                 black glyphs inside it and paleyellow around
+//!   6. mouse    — Tbouncemouse (synthetic event) then Trdmouse →
 //!                 Rrdmouse within 5 s; SKIP without an X display
 //!
 //! Every step prints PASSED / SKIP / FAILED on stdout; exit 0 unless a
@@ -57,7 +62,7 @@ fn run() -> i32 {
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false);
     if !has_x {
-        for step in ["init", "alloc", "fill", "readback", "mouse"] {
+        for step in ["init", "alloc", "fill", "text", "readback", "mouse"] {
             report(step, "SKIP", "no X display ($DISPLAY is empty)");
         }
         return 0;
@@ -148,15 +153,106 @@ fn run() -> i32 {
     debug_assert_eq!(fill.len(), 46);
     let _ = step_rpc(&mut srv, "fill", 3, &Wsysmsg::Twrdraw { data: fill }, &mut failed);
 
-    // --- 4. readback: 'r' image 0 full rect, then drain Trddraw ------------
-    let need = (W * H * 4) as usize;
-    let r = encode_drawcmds(&[DrawCmd::ReadPixels { id: 0, r: full }]);
+    // --- 4. text: font ops 'i'/'l'/'x' paint two glyphs over a bg rect ----
+    // A two-glyph GREY1 font, exactly the shapes acme streams: 'b' cache
+    // image → 'i' (nchars, ascent), 'b' bits image → 'y' pixel rows, one
+    // 'l' per cache-miss (cell R + metrics), then 'x' stringbg. Glyph
+    // cells: 4×8 blocks of ink at (0,4) and (8,4) in a 16×16 font image.
+    let font_rect = rect(0, 0, 16, 16);
+    let mut glyph_rows = vec![0u8; 32]; // 16 px wide GREY1 ⇒ 2 B/row
+    for row in 4..12 {
+        glyph_rows[row * 2] = 0xF0; // x0..3 inked
+        glyph_rows[row * 2 + 1] = 0x0F; // x8..11 inked
+    }
+    let text = encode_drawcmds(&[
+        DrawCmd::Allocate {
+            id: 2,
+            screen_id: 0,
+            refresh: 0,
+            chan: Chan::GREY1.0,
+            repl: 0,
+            r: font_rect,
+            clip_r: font_rect,
+            value: 0,
+        },
+        DrawCmd::InitFont { font_id: 2, nchars: 2, ascent: 10 },
+        DrawCmd::Allocate {
+            id: 3,
+            screen_id: 0,
+            refresh: 0,
+            chan: Chan::GREY1.0,
+            repl: 0,
+            r: font_rect,
+            clip_r: font_rect,
+            value: 0,
+        },
+        DrawCmd::WritePixels { id: 3, r: font_rect, data: glyph_rows },
+        DrawCmd::LoadFont {
+            font_id: 2,
+            src_id: 3,
+            index: 0,
+            r: rect(0, 4, 4, 12),
+            sp: Point { x: 0, y: 4 },
+            left: 0,
+            width: 4,
+        },
+        DrawCmd::LoadFont {
+            font_id: 2,
+            src_id: 3,
+            index: 1,
+            r: rect(8, 4, 12, 12),
+            sp: Point { x: 8, y: 4 },
+            left: 0,
+            width: 4,
+        },
+        DrawCmd::Allocate {
+            id: 4,
+            screen_id: 0,
+            refresh: 0,
+            chan: Chan::XRGB32.0,
+            repl: 1,
+            r: rect(0, 0, 1, 1),
+            clip_r: rect(0, 0, 1, 1),
+            value: 0x0000_00FF, // DBlack
+        },
+        DrawCmd::Allocate {
+            id: 5,
+            screen_id: 0,
+            refresh: 0,
+            chan: Chan::XRGB32.0,
+            repl: 1,
+            r: rect(0, 0, 1, 1),
+            clip_r: rect(0, 0, 1, 1),
+            value: 0xFFFF_FFFF, // DWhite
+        },
+        DrawCmd::StringBg {
+            dst_id: 0,
+            src_id: 4, // ink
+            font_id: 2,
+            p: Point { x: 10, y: 16 }, // baseline: ascent 10 ⇒ top at y=6
+            clip_r: rect(0, 0, W, H),
+            sp: Point { x: 0, y: 0 },
+            bg_id: 5,
+            bg_pt: Point { x: 0, y: 0 },
+            indices: vec![0, 1],
+        },
+        DrawCmd::Flush,
+    ]);
+    let _ = step_rpc(&mut srv, "text", 4, &Wsysmsg::Twrdraw { data: text }, &mut failed);
+
+    // --- 5. readback: 'r' over the text region (8,4)-(22,24), Trddraw ----
+    // Region around the string: bg rect (10,6)-(18,22), glyphs
+    // (10,10)-(18,18). x8r8g8b8 expectations per render semantics:
+    // DPaleyellow → [AA FF FF 00], DWhite → [FF FF FF 00], DBlack → 0.
+    let region = rect(8, 4, 22, 24); // 14×20
+    let need = (14 * 20 * 4) as usize;
+    let r = encode_drawcmds(&[DrawCmd::ReadPixels { id: 0, r: region }]);
     debug_assert_eq!(r.len(), 21);
     let mut got = Vec::with_capacity(need);
     let mut read_failed = failed;
-    if step_rpc(&mut srv, "readback-r", 4, &Wsysmsg::Twrdraw { data: r }, &mut read_failed).is_some() {
+    if step_rpc(&mut srv, "readback-r", 5, &Wsysmsg::Twrdraw { data: r }, &mut read_failed).is_some() {
         while got.len() < need {
-            match srv.rpc(5, &Wsysmsg::Trddraw { count: (need - got.len()) as u32 }) {
+            match srv.rpc(6, &Wsysmsg::Trddraw { count: (need - got.len()) as u32 }) {
                 Ok((_, Wsysmsg::Rrddraw { data })) => got.extend_from_slice(&data),
                 Ok((_, Wsysmsg::Rerror { error })) => {
                     report("readback", "FAILED", &format!("Rerror: {error}"));
@@ -176,20 +272,39 @@ fn run() -> i32 {
             }
         }
         if !read_failed {
-            // Render semantics: x8r8g8b8 stores [B,G,R,X]; DPaleyellow
-            // 0xFFFFAAFF converts via Chan::rgbatoimg -> 0x00FFFFAA, i.e.
-            // bytes AA FF FF 00 per pixel (screen.rs make_image unit test).
-            let px = [0xAA, 0xFF, 0xFF, 0x00];
-            let mismatch = got
-                .chunks_exact(4)
-                .position(|p| p != px)
-                .map(|i| format!("pixel {i} (byte offset {}) = {:02x?}, want {px:02x?}", i * 4, &got[i * 4..i * 4 + 4]))
-                .filter(|_| got.len() == need)
-                .or_else(|| (got.len() != need).then(|| format!("got {} bytes, want {need}", got.len())));
-            read_failed = mismatch.is_some();
-            match &mismatch {
-                Some(why) => report("readback", "FAILED", why),
-                None => report("readback", "PASSED", &format!("{} bytes of paleyellow [AA FF FF 00]", got.len())),
+            const PALE: [u8; 4] = [0xAA, 0xFF, 0xFF, 0x00];
+            const WHITE: [u8; 4] = [0xFF, 0xFF, 0xFF, 0x00];
+            const BLACK: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+            let mut why: Option<String> = None;
+            if got.len() != need {
+                why = Some(format!("got {} bytes, want {need}", got.len()));
+            }
+            for i in 0..(need / 4) {
+                let gx = 8 + (i as u32) % 14;
+                let gy = 4 + (i as u32) / 14;
+                // 'x' bg rect = (p.x, p.y−ascent)..(p.x+Σwidth, +Dy(font r))
+                // = (10,6)..(18,22); glyph cells advance 4+4 from x=10.
+                let want = match (gx, gy) {
+                    (10..=17, 6..=21) if (10..=17).contains(&gy) => BLACK,
+                    (10..=17, 6..=21) => WHITE,
+                    _ => PALE,
+                };
+                if got[i * 4..i * 4 + 4] != want {
+                    why = Some(format!(
+                        "pixel ({gx},{gy}) = {:02x?}, want {want:02x?}",
+                        &got[i * 4..i * 4 + 4]
+                    ));
+                    break;
+                }
+            }
+            read_failed = why.is_some();
+            match &why {
+                Some(w) => report("readback", "FAILED", w),
+                None => report(
+                    "readback",
+                    "PASSED",
+                    "text region: bg rect white, glyph cells black, surround paleyellow",
+                ),
             }
         }
     }
@@ -199,8 +314,8 @@ fn run() -> i32 {
     if failed {
         report("mouse", "SKIP", "a previous step failed");
     } else {
-        match srv.rpc(6, &Wsysmsg::Tbouncemouse { x: 9, y: 7, buttons: 0 }) {
-            Ok((_, Wsysmsg::Rbouncemouse)) => match srv.rpc(7, &Wsysmsg::Trdmouse) {
+        match srv.rpc(7, &Wsysmsg::Tbouncemouse { x: 9, y: 7, buttons: 0 }) {
+            Ok((_, Wsysmsg::Rbouncemouse)) => match srv.rpc(8, &Wsysmsg::Trdmouse) {
                 Ok((_, Wsysmsg::Rrdmouse { x, y, buttons, msec, resized })) => {
                     // A real host event may race the bounce and win; any
                     // well-formed event inside the window proves the

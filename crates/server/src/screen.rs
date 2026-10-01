@@ -29,10 +29,12 @@
 //! render::write_bytes[_compressed]; grey masks in 'd' blend like memdraw
 //! (acme's allocimagemix qmask GREY8 0x3f).
 //!
-//! v0 gaps (accepted, logged in the module docs): fonts ('i'/'l'/'s'/'x')
-//! are accepted but not rasterized, so glyph bits land in images but acme
-//! text is still invisible until a string raster exists; 'e'/'E'/'p'/'P'
-//! are no-ops; the cursor is not themed.
+//! v0 gaps (accepted, logged in the module docs): 'e'/'E'/'p'/'P' are
+//! accepted but not rasterized, named images and SetOp are not modeled,
+//! and the cursor is not themed. Fonts work end to end: 'i' registers a
+//! client-initialized font, 'l' copies glyph bits + metrics into the
+//! font image, 's'/'x' raster strings from that cache (GREY1..GREY8
+//! masks blend), so acme text is visible.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -912,8 +914,20 @@ impl Screen {
                     )?;
                     dirty = true;
                 }
-                DrawCmd::StringBg { .. } => {
-                    // stage 4: accepted, not rasterized yet
+                DrawCmd::StringBg { dst_id, src_id, font_id, p, clip_r, sp, bg_id, bg_pt, indices } => {
+                    draw_string(
+                        &mut self.images,
+                        &self.fonts,
+                        dst_id,
+                        src_id,
+                        font_id,
+                        p,
+                        clip_r,
+                        sp,
+                        Some((bg_id, bg_pt)),
+                        &indices,
+                    )?;
+                    dirty = true;
                 }
                 DrawCmd::Ellipse { .. } | DrawCmd::Polygon { .. } | DrawCmd::FillPolygon { .. } => {
                     // arc/polygon raster: v0 gap
@@ -1811,6 +1825,100 @@ mod tests {
             )
             .unwrap_err(),
             "unknown id for draw image"
+        );
+    }
+
+    // --- fonts: 'x' stringbg (devdraw.c:1273) ------------------------------
+
+    #[test]
+    fn string_bg_covers_exactly_sum_width_x_font_height_at_baseline() {
+        let mut images = HashMap::from([
+            (1, white_canvas(1)),
+            (2, two_glyph_font().0),
+            (
+                4,
+                make_image(4, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0x0000_00FF)
+                    .unwrap(),
+            ),
+            // Opaque red 1×1 repl tile as the background.
+            (
+                5,
+                make_image(5, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0xFF00_00FF)
+                    .unwrap(),
+            ),
+        ]);
+        let fonts = HashMap::from([(2, two_glyph_font().1)]);
+        draw_string(
+            &mut images, &fonts, 1, 4, 2, Point { x: 2, y: 5 }, rect_of(12, 8), Point { x: 0, y: 0 },
+            Some((5, Point { x: 0, y: 0 })), &[0, 1],
+        )
+        .unwrap();
+        let img = &images[&1];
+        let red = {
+            let w = Chan::XRGB32.rgbatoimg(0xFF00_00FF).to_le_bytes();
+            [w[0], w[1], w[2], w[3]]
+        };
+        let ink = [0x00, 0x00, 0x00, 0x00];
+        let white = [0xFF, 0xFF, 0xFF, 0x00];
+        // bg rect = (p.x, p.y−ascent)..(p.x+Σwidth, p.y−ascent+Dy(font r))
+        // = (2,3)..(2+7, 3+16→clipped at 8). Font image is 16 tall.
+        for y in 0..8u32 {
+            for x in 0..12u32 {
+                let in_bg = (2..9).contains(&x) && (3..8).contains(&y);
+                // glyphs 0 (x2..5, cols 0|2) and 1 (x5..8) inside the bg
+                let glyph = match (x, y) {
+                    (2..=4, 4..=6) if x != 3 => true,
+                    (5..=7, 4..=6) => true,
+                    _ => false,
+                };
+                let want = if glyph {
+                    ink
+                } else if in_bg {
+                    red
+                } else {
+                    white
+                };
+                assert_eq!(xrgb_at(img, x, y), want, "({x},{y})");
+            }
+        }
+        // Edges: bg starts exactly at p.x / p.y−ascent and ends at Σwidth.
+        assert_eq!(xrgb_at(img, 1, 3), white); // left of bg
+        assert_eq!(xrgb_at(img, 9, 3), white); // right of bg (2+7=9 exclusive)
+        assert_eq!(xrgb_at(img, 2, 2), white); // above bg
+    }
+
+    #[test]
+    fn string_bg_bad_index_leaves_background_undrawn() {
+        let mut images = HashMap::from([
+            (1, white_canvas(1)),
+            (2, two_glyph_font().0),
+            (
+                4,
+                make_image(4, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0x0000_00FF)
+                    .unwrap(),
+            ),
+            (
+                5,
+                make_image(5, rect_of(1, 1), rect_of(1, 1), Chan::XRGB32, true, 0xFF00_00FF)
+                    .unwrap(),
+            ),
+        ]);
+        let fonts = HashMap::from([(2, two_glyph_font().1)]);
+        // The bad index is checked in the first (width-counting) pass, so
+        // the background must not be painted either.
+        assert_eq!(
+            draw_string(
+                &mut images, &fonts, 1, 4, 2, Point { x: 2, y: 5 }, rect_of(12, 8),
+                Point { x: 0, y: 0 }, Some((5, Point { x: 0, y: 0 })), &[0, 9],
+            )
+            .unwrap_err(),
+            "character index out of range"
+        );
+        assert!(
+            images[&1]
+                .pixels
+                .chunks_exact(4)
+                .all(|p| p == [0xFF, 0xFF, 0xFF, 0x00])
         );
     }
 }
