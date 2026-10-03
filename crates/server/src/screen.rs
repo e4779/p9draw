@@ -980,7 +980,10 @@ impl Screen {
             kbdlegtags: VecDeque::new(),
             mouse: None,
             mouse_fresh: false,
-            resized: false,
+            // The window "was resized into existence": acme paints its initial
+            // layout only after seeing resized=1 in the first Rrdmouse (real
+            // devdraw semantics — the first mouse reply always carries it).
+            resized: true,
             dpi: SCREEN_DPI,
             clientid: 1,
             snarf: String::new(),
