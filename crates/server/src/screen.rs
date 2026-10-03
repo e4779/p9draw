@@ -38,7 +38,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
@@ -612,6 +612,19 @@ fn draw_string(
     }
     dst.clipr = saved_clip;
     Ok(())
+}
+
+/// `P9DRAW_PRESENT_DEBUG=1` — mirror of the host-side present gate: one
+/// stderr line per publish with the screen-side view (sizes, counts). The
+/// gate is read once; a disabled session pays a single `OnceLock` lookup
+/// per present.
+fn present_debug() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("P9DRAW_PRESENT_DEBUG")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+    })
 }
 
 // --- the screen: image store + window host --------------------------------
@@ -1277,7 +1290,7 @@ impl Screen {
     /// reply leaves the dispatch loop, so any readback after a flushed
     /// draw sees the windows (real devdraw semantics: Trddraw returns
     /// the composited screen).
-    fn present(&mut self) {
+    fn present(&mut self, why: &'static str) {
         // `remove`/`insert` only works around composite_windows taking
         // the screen by `&mut` alongside the shared window map: the
         // composite goes back into the store before anything else
@@ -1287,6 +1300,16 @@ impl Screen {
             None => return,
         };
         composite_windows(&mut scr, &self.images, &self.windows);
+        if present_debug() {
+            eprintln!(
+                "p9draw present[{why}] win={}x{} images={} windows={} px={}",
+                self.win.0,
+                self.win.1,
+                self.images.len(),
+                self.windows.len(),
+                scr.pixels.len()
+            );
+        }
         {
             let surface = self.host.surface();
             let n = surface.len().min(scr.pixels.len());
@@ -1331,7 +1354,7 @@ impl Screen {
         if let Ok(img) = Image::new(0, rect_of(w, h), SCREEN_CHAN) {
             self.images.insert(0, img);
             self.resized = true;
-            self.present();
+            self.present("resize");
             // devdraw reports a resize as a mouse event promptly (the
             // client re-inits on resized=1): answer a parked read now
             // instead of waiting for the next motion, or queue the
@@ -1428,7 +1451,7 @@ impl Screen {
                             // later ReadPixels/Trddraw never sees a
                             // pre-composite screen and the composite is
                             // never run twice for one batch.
-                            self.present();
+                            self.present("wrdraw");
                         }
                         send(&Wsysmsg::Rwrdraw { count: data.len() as u32 }, tag, out)?;
                     }
@@ -1572,6 +1595,12 @@ pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
                     return Ok(());
                 }
             }
+            // A present that failed used to vanish into the host's error
+            // slot and sit there — the exact mechanism behind a dark window
+            // that nothing in the logs explains. Surface it.
+            if let Some(e) = sc.host.take_error() {
+                logger.log(&format!("serve: host present error: {e}"));
+            }
         }
         let idle = Duration::from_millis(if screen.is_some() { 16 } else { 200 });
         match rx.recv_timeout(idle) {
@@ -1602,7 +1631,7 @@ pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
                             match Screen::init(&winsize, &label, &logger) {
                                 Ok(mut sc) => {
                                     sc.mouse = Some((0, 0, 0));
-                                    sc.present();
+                                    sc.present("tinit");
                                     send(&Wsysmsg::Rinit, tag, &mut out)
                                         .map_err(|e| format!("stdout: {e}"))?;
                                     logger
