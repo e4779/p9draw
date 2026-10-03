@@ -23,9 +23,9 @@ screen-size propagation on first layout, wgpu backend horizon.
 | `crates/render` | software raster: images, chans, fill/compose/tile, grey masks |
 | `crates/host` | winit 0.30 + softbuffer 0.4 window host (X11 + native Wayland) |
 | `crates/server` | the serve binary: wire dispatch, image store, screen composite, stats/trace/present-debug |
-| `docs/SPEC.md` | the wire protocol specification (verified against real acme captures) |
-| `docs/ARCHITECTURE.md` | crate map and data flow |
-| `docs/DEBUG-NOTES.md` | the dark-window investigation record (evidence file) |
+| `SPEC.md` | the wire protocol specification (verified against real acme captures) |
+| `ARCHITECTURE.md` | crate map and data flow |
+| `DEBUG-NOTES.md` | the dark-window investigation record (evidence file) |
 | `docs/*.md, docs/_sources/` | the OKF knowledge bundle: acme lineage research (ad, edward, wily, fleet, Greenfield, waypipe, ...) and the project diary (roadmap-devdraw.md) |
 
 ## Run
