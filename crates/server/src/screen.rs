@@ -684,6 +684,60 @@ fn composite_windows(scr: &mut Image, images: &HashMap<u32, Image>, windows: &[u
     }
 }
 
+
+/// Present-time histogram of the composited screen image, parked for the
+/// stats reporter (`P9DRAW_STATS=1`): stride samples (≤ ~64k px) classified
+/// by avg-RGB — dark < 64, light > 200, other between. The window list
+/// (ids + sizes) rides along on the same line: a window the composite
+/// never sees shows up as a missing/oversized entry while the trace shows
+/// draws landing in it.
+fn img0_sample(
+    scr: &Image,
+    images: &HashMap<u32, Image>,
+    windows: &[u32],
+) -> stats::Img0Sample {
+    let (w, h) = (
+        rect_dx(scr.rect).max(0) as u32,
+        rect_dy(scr.rect).max(0) as u32,
+    );
+    let total = u64::from(w) * u64::from(h);
+    let step = (total / 65_536).max(1);
+    let (mut dark, mut light, mut other) = (0u64, 0u64, 0u64);
+    for idx in (0..total).step_by(step as usize) {
+        let x = scr.rect.min.x as i64 + (idx % u64::from(w)) as i64;
+        let y = scr.rect.min.y as i64 + (idx / u64::from(w)) as i64;
+        let luma = match rgba_at(scr, x as i32, y as i32) {
+            Some(v) => ((v >> 24 & 0xFF) + (v >> 16 & 0xFF) + (v >> 8 & 0xFF)) / 3,
+            None => 0,
+        };
+        match luma {
+            0..64 => dark += 1,
+            201..=255 => light += 1,
+            _ => other += 1,
+        }
+    }
+    let wins: Vec<String> = windows
+        .iter()
+        .filter_map(|id| {
+            images.get(id).map(|img| {
+                format!(
+                    "{id} {}x{}",
+                    rect_dx(img.rect).max(0),
+                    rect_dy(img.rect).max(0)
+                )
+            })
+        })
+        .collect();
+    stats::Img0Sample {
+        w,
+        h,
+        dark,
+        light,
+        other,
+        windows: wins.join(","),
+    }
+}
+
 // --- P9DRAW_APPLY_TRACE=1: pixel probes around apply ------------------------
 //
 // The live-session lens for "text reaches the wire but not the screen":
@@ -1303,6 +1357,9 @@ impl Screen {
             None => return,
         };
         composite_windows(&mut scr, &self.images, &self.windows);
+        if stats::enabled() {
+            stats::record_img0(img0_sample(&scr, &self.images, &self.windows));
+        }
         if present_debug() {
             eprintln!(
                 "p9draw present[{why}] win={}x{} images={} windows={} px={}",
@@ -1677,6 +1734,49 @@ pub fn serve_stdio(logger: Arc<Logger>) -> Result<(), String> {
 mod tests {
     use super::*;
     use p9draw_protocol::{Point, Rect, Wsysmsg, decode, encode};
+
+    // --- img0 histogram ---------------------------------------------------
+
+    #[test]
+    fn img0_sample_classifies_dark_light_and_windows() {
+        // White 12x8 screen with a 2x2 black patch; the window list is
+        // reported as "id WxH" straight from the image map.
+        let mut scr = white_canvas(0);
+        fill(
+            &mut scr,
+            Rect { min: Point { x: 1, y: 1 }, max: Point { x: 3, y: 3 } },
+            0,
+        );
+        let images = HashMap::from([(39u32, white_canvas(39))]);
+        let s = img0_sample(&scr, &images, &[39]);
+        assert_eq!((s.w, s.h), (12, 8));
+        assert_eq!(s.dark, 4, "2x2 patch = 4 dark samples");
+        assert_eq!(s.other, 0);
+        assert_eq!(s.light, 12 * 8 - 4);
+        assert_eq!(s.windows, "39 12x8");
+    }
+
+    #[test]
+    fn img0_sample_strides_a_dark_full_size_screen() {
+        // 1552x880 black: every sample is dark, and the stride caps the
+        // sample count at ~total/20 so present() pays sub-millisecond.
+        let scr = make_image(
+            0,
+            rect_of(1552, 880),
+            rect_of(1552, 880),
+            Chan::XRGB32,
+            false,
+            0,
+        )
+        .unwrap();
+        let s = img0_sample(&scr, &HashMap::new(), &[]);
+        let total = 1552u64 * 880;
+        let step = (total / 65_536).max(1);
+        assert_eq!(s.dark, total.div_ceil(step));
+        assert_eq!((s.w, s.h), (1552, 880));
+        assert_eq!(s.windows, "");
+    }
+
 
     // --- P9DRAW_APPLY_TRACE probes ---------------------------------------
 

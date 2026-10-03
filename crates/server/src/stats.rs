@@ -130,6 +130,63 @@ pub fn format_stats(entries: &[(&'static str, u64, u64)]) -> String {
     format!("serve stats: {}", body.join("; "))
 }
 
+// --- img0 histogram (sampled by screen.rs present) ---------------------------
+
+/// Latest histogram of the STORE's composited screen image (`images[0]`),
+/// sampled by `Screen::present` on every dirty batch and printed by the
+/// reporter next to the wire stats: the direct arbiter between "acme
+/// paints past image 0" (dark) and "image 0 is fine, the bug is
+/// downstream" (light). Classification by avg-RGB: dark < 64, light >
+/// 200 (background fills: white / paleyellow), other in between (ink,
+/// borders).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Img0Sample {
+    /// image 0 geometry in physical pixels
+    pub w: u32,
+    pub h: u32,
+    /// sampled pixels with avg-RGB < 64
+    pub dark: u64,
+    /// sampled pixels with avg-RGB > 200
+    pub light: u64,
+    /// sampled pixels in between
+    pub other: u64,
+    /// windows composited over image 0, `"id WxH"` comma-joined —
+    /// branch-B diagnostics: which window the composite covered
+    pub windows: String,
+}
+
+static IMG0: Mutex<Option<Img0Sample>> = Mutex::new(None);
+
+/// Park the latest img0 histogram; no-op when counting is off.
+pub fn record_img0(sample: Img0Sample) {
+    if enabled() {
+        if let Ok(mut slot) = IMG0.lock() {
+            *slot = Some(sample);
+        }
+    }
+}
+
+/// `serve img0: 1552x880 dark=N light=M other=K wins=[39 1552x880]`.
+pub fn format_img0(s: &Img0Sample) -> String {
+    format!(
+        "serve img0: {}x{} dark={} light={} other={} wins=[{}]",
+        s.w, s.h, s.dark, s.light, s.other, s.windows
+    )
+}
+
+fn img0_current() -> Option<Img0Sample> {
+    IMG0.lock().ok()?.clone()
+}
+
+/// Both periodic lines: wire buckets, then the img0 histogram when the
+/// screen has parked one.
+fn log_current(logger: &Logger) {
+    logger.log(&format_stats(&current()));
+    if let Some(s) = img0_current() {
+        logger.log(&format_img0(&s));
+    }
+}
+
 static STATS: OnceLock<Option<Mutex<Stats>>> = OnceLock::new();
 
 /// Read `P9DRAW_STATS` once (`1` enables counting). Later calls are
@@ -182,7 +239,7 @@ pub fn spawn_reporter(logger: Arc<Logger>) {
         .name("p9draw-stats".into())
         .spawn(move || loop {
             thread::sleep(STATS_PERIOD);
-            logger.log(&format_stats(&current()));
+            log_current(&logger);
         })
         .expect("spawn stats reporter");
 }
@@ -191,7 +248,7 @@ pub fn spawn_reporter(logger: Arc<Logger>) {
 /// nothing. No-op when counting is off.
 pub fn log_final(logger: &Logger) {
     if enabled() {
-        logger.log(&format_stats(&current()));
+        log_current(logger);
     }
 }
 
@@ -265,5 +322,36 @@ mod tests {
         let mut s = Stats::default();
         s.record(msg.msg_type(), encoded_size(&msg) as usize);
         assert_eq!(s.snapshot(), vec![("Rrdmouse", 1, 23)]);
+    }
+
+    #[test]
+    fn img0_line_formats_geometry_counts_and_windows() {
+        let s = Img0Sample {
+            w: 1552,
+            h: 880,
+            dark: 1700,
+            light: 63_000,
+            other: 800,
+            windows: "39 1552x880".into(),
+        };
+        assert_eq!(
+            format_img0(&s),
+            "serve img0: 1552x880 dark=1700 light=63000 other=800 wins=[39 1552x880]"
+        );
+    }
+
+    #[test]
+    fn img0_record_is_silent_while_counting_is_off() {
+        // No init_from_env ran in this test process: enabled() is false,
+        // so the record is dropped and the slot stays empty.
+        record_img0(Img0Sample {
+            w: 4,
+            h: 4,
+            dark: 1,
+            light: 2,
+            other: 1,
+            windows: String::new(),
+        });
+        assert!(img0_current().is_none());
     }
 }

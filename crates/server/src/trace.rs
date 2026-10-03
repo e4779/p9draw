@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, OnceLock};
 
-use p9draw_protocol::{DrawCmd, Rect};
+use p9draw_protocol::{DrawCmd, Point, Rect};
 
 use crate::pump::Logger;
 
@@ -79,55 +79,90 @@ pub fn op_letter(cmd: &DrawCmd) -> String {
     String::new()
 }
 
-/// `cmd op=<wire letter> id=<n|-> rect=(x0,y0)-(x1,y1)|- bytes=<n>`.
+/// `cmd op=<wire letter> id=<n|-> rect=(x0,y0)-(x1,y1)|- bytes=<n>[ p=(x,y)]`.
 /// `bytes` counts the command's variable data tail (pixel data, string
 /// indices, vertex lists); 0 for fixed-size commands. Fields absent on
 /// the wire print as `-`: 'v' is drawflush (devdraw.c:1406) — a 1-byte
 /// op with no id/rect — so `op=v id=- rect=-` in a live trace is the
-/// correct rendering, not a formatting bug.
+/// correct rendering, not a formatting bug. String ops add `p=`: their
+/// `rect` is the CLIP (often the whole window), the pen position is
+/// where the glyphs actually land.
 fn line(cmd: &DrawCmd) -> String {
-    let (op, id, r, bytes): (String, Option<u32>, Option<Rect>, usize) = match cmd {
-        DrawCmd::Allocate { id, r, .. } => ("b".into(), Some(*id), Some(*r), 0),
-        DrawCmd::AllocScreen { id, .. } => ("A".into(), Some(*id), None, 0),
-        DrawCmd::PublicScreen { id, .. } => ("S".into(), Some(*id), None, 0),
-        DrawCmd::ReplClip { dst_id, clip_r, .. } => ("c".into(), Some(*dst_id), Some(*clip_r), 0),
-        DrawCmd::Draw { dst_id, r, .. } => ("d".into(), Some(*dst_id), Some(*r), 0),
-        DrawCmd::Debug { .. } => ("D".into(), None, None, 0),
-        DrawCmd::Ellipse { filled, dst_id, .. } => {
-            (if *filled { "E" } else { "e" }.into(), Some(*dst_id), None, 0)
-        }
-        DrawCmd::Free { id } => ("f".into(), Some(*id), None, 0),
-        DrawCmd::FreeScreen { id } => ("F".into(), Some(*id), None, 0),
-        DrawCmd::InitFont { font_id, .. } => ("i".into(), Some(*font_id), None, 0),
-        DrawCmd::Image0Screen => ("J".into(), Some(0), None, 0),
-        DrawCmd::ReadInfo => ("I".into(), Some(0), None, 0),
-        DrawCmd::Query { specs } => ("q".into(), None, None, specs.len()),
-        DrawCmd::LoadFont { font_id, r, .. } => ("l".into(), Some(*font_id), Some(*r), 0),
-        DrawCmd::AttachNamed { dst_id, name } => ("n".into(), Some(*dst_id), None, name.len()),
-        DrawCmd::NameImage { dst_id, name, .. } => ("N".into(), Some(*dst_id), None, name.len()),
-        DrawCmd::Line { dst_id, .. } => ("L".into(), Some(*dst_id), None, 0),
-        DrawCmd::Position { id, .. } => ("o".into(), Some(*id), None, 0),
-        DrawCmd::SetOp { .. } => ("O".into(), None, None, 0),
-        DrawCmd::Polygon { dst_id, pts, .. } => ("p".into(), Some(*dst_id), None, pts.len() * 8),
-        DrawCmd::FillPolygon { dst_id, pts, .. } => ("P".into(), Some(*dst_id), None, pts.len() * 8),
-        DrawCmd::ReadPixels { id, r } => ("r".into(), Some(*id), Some(*r), 0),
-        DrawCmd::String { dst_id, clip_r, indices, .. } => {
-            ("s".into(), Some(*dst_id), Some(*clip_r), indices.len() * 2)
-        }
-        DrawCmd::StringBg { dst_id, clip_r, indices, .. } => {
-            ("x".into(), Some(*dst_id), Some(*clip_r), indices.len() * 2)
-        }
-        DrawCmd::Top { ids, .. } => ("t".into(), None, None, ids.len() * 4),
-        DrawCmd::Flush => ("v".into(), None, None, 0),
-        DrawCmd::WritePixels { id, r, data } => ("y".into(), Some(*id), Some(*r), data.len()),
-        DrawCmd::WriteCompressed { id, r, data } => ("Y".into(), Some(*id), Some(*r), data.len()),
-        DrawCmd::Unknown { op } => (format!("#{op:02x}"), None, None, 0),
-    };
+    let (op, id, r, bytes, pen): (String, Option<u32>, Option<Rect>, usize, Option<Point>) =
+        match cmd {
+            DrawCmd::Allocate { id, r, .. } => ("b".into(), Some(*id), Some(*r), 0, None),
+            DrawCmd::AllocScreen { id, .. } => ("A".into(), Some(*id), None, 0, None),
+            DrawCmd::PublicScreen { id, .. } => ("S".into(), Some(*id), None, 0, None),
+            DrawCmd::ReplClip { dst_id, clip_r, .. } => {
+                ("c".into(), Some(*dst_id), Some(*clip_r), 0, None)
+            }
+            DrawCmd::Draw { dst_id, r, .. } => ("d".into(), Some(*dst_id), Some(*r), 0, None),
+            DrawCmd::Debug { .. } => ("D".into(), None, None, 0, None),
+            DrawCmd::Ellipse { filled, dst_id, .. } => (
+                if *filled { "E" } else { "e" }.into(),
+                Some(*dst_id),
+                None,
+                0,
+                None,
+            ),
+            DrawCmd::Free { id } => ("f".into(), Some(*id), None, 0, None),
+            DrawCmd::FreeScreen { id } => ("F".into(), Some(*id), None, 0, None),
+            DrawCmd::InitFont { font_id, .. } => ("i".into(), Some(*font_id), None, 0, None),
+            DrawCmd::Image0Screen => ("J".into(), Some(0), None, 0, None),
+            DrawCmd::ReadInfo => ("I".into(), Some(0), None, 0, None),
+            DrawCmd::Query { specs } => ("q".into(), None, None, specs.len(), None),
+            DrawCmd::LoadFont { font_id, r, .. } => {
+                ("l".into(), Some(*font_id), Some(*r), 0, None)
+            }
+            DrawCmd::AttachNamed { dst_id, name } => {
+                ("n".into(), Some(*dst_id), None, name.len(), None)
+            }
+            DrawCmd::NameImage { dst_id, name, .. } => {
+                ("N".into(), Some(*dst_id), None, name.len(), None)
+            }
+            DrawCmd::Line { dst_id, .. } => ("L".into(), Some(*dst_id), None, 0, None),
+            DrawCmd::Position { id, .. } => ("o".into(), Some(*id), None, 0, None),
+            DrawCmd::SetOp { .. } => ("O".into(), None, None, 0, None),
+            DrawCmd::Polygon { dst_id, pts, .. } => {
+                ("p".into(), Some(*dst_id), None, pts.len() * 8, None)
+            }
+            DrawCmd::FillPolygon { dst_id, pts, .. } => {
+                ("P".into(), Some(*dst_id), None, pts.len() * 8, None)
+            }
+            DrawCmd::ReadPixels { id, r } => ("r".into(), Some(*id), Some(*r), 0, None),
+            DrawCmd::String { dst_id, p, clip_r, indices, .. } => (
+                "s".into(),
+                Some(*dst_id),
+                Some(*clip_r),
+                indices.len() * 2,
+                Some(*p),
+            ),
+            DrawCmd::StringBg { dst_id, p, clip_r, indices, .. } => (
+                "x".into(),
+                Some(*dst_id),
+                Some(*clip_r),
+                indices.len() * 2,
+                Some(*p),
+            ),
+            DrawCmd::Top { ids, .. } => ("t".into(), None, None, ids.len() * 4, None),
+            DrawCmd::Flush => ("v".into(), None, None, 0, None),
+            DrawCmd::WritePixels { id, r, data } => {
+                ("y".into(), Some(*id), Some(*r), data.len(), None)
+            }
+            DrawCmd::WriteCompressed { id, r, data } => {
+                ("Y".into(), Some(*id), Some(*r), data.len(), None)
+            }
+            DrawCmd::Unknown { op } => (format!("#{op:02x}"), None, None, 0, None),
+        };
     let id = id.map(|v| v.to_string()).unwrap_or_else(|| "-".into());
     let rect = r
         .map(|r| format!("rect=({},{})-({},{})", r.min.x, r.min.y, r.max.x, r.max.y))
         .unwrap_or_else(|| "rect=-".into());
-    format!("cmd op={op} id={id} {rect} bytes={bytes}")
+    let mut s = format!("cmd op={op} id={id} {rect} bytes={bytes}");
+    if let Some(p) = pen {
+        s.push_str(&format!(" p=({},{})", p.x, p.y));
+    }
+    s
 }
 
 #[cfg(test)]
@@ -151,12 +186,15 @@ mod tests {
             dst_id: 3,
             src_id: 1,
             font_id: 2,
-            p: Point { x: 0, y: 0 },
+            p: Point { x: 7, y: 9 },
             clip_r: rect(0, 0, 10, 10),
             sp: Point { x: 0, y: 0 },
             indices: vec![1, 2, 3],
         };
-        assert_eq!(line(&cmd), "cmd op=s id=3 rect=(0,0)-(10,10) bytes=6");
+        assert_eq!(
+            line(&cmd),
+            "cmd op=s id=3 rect=(0,0)-(10,10) bytes=6 p=(7,9)"
+        );
     }
 
     #[test]
