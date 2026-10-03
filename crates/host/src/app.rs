@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -66,6 +66,32 @@ fn frame_len(w: u32, h: u32) -> usize {
     (w as usize).saturating_mul(h as usize).saturating_mul(4)
 }
 
+/// `P9DRAW_PRESENT_DEBUG=1` — one stderr line per present attempt: backend
+/// (as the session env points it), sizes, configure state, softbuffer buffer
+/// length and any present error. The gate is read once; a disabled session
+/// pays a single `OnceLock` lookup per present.
+fn present_debug() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("P9DRAW_PRESENT_DEBUG")
+            .map(|v| v.trim() == "1")
+            .unwrap_or(false)
+    })
+}
+
+/// Which display stack the session env points at (`WAYLAND_DISPLAY` wins
+/// over `DISPLAY`, matching winit's own preference). A diagnostics label
+/// only — the real backend is whatever winit resolved at `resumed`.
+fn env_backend() -> &'static str {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        "wayland"
+    } else if std::env::var_os("DISPLAY").is_some() {
+        "x11"
+    } else {
+        "none"
+    }
+}
+
 /// Softbuffer state; `size` tracks the last surface `resize`.
 struct SoftGpu {
     _context: Context<Arc<Window>>,
@@ -93,6 +119,8 @@ pub(crate) struct HostApp {
     title: String,
     width: u32,
     height: u32,
+    /// Diagnostics label from the session env (`P9DRAW_PRESENT_DEBUG`).
+    backend: &'static str,
     buttons: u8,
     cursor: Option<(i32, i32)>,
     window: Option<Arc<Window>>,
@@ -101,6 +129,14 @@ pub(crate) struct HostApp {
     queue: VecDeque<HostEvent>,
     error: Option<HostError>,
     closed: bool,
+    /// The first configure landed (mapped size or redraw request): only
+    /// then may a buffer attach+commit — an earlier commit is what the
+    /// xdg-shell spec calls a protocol error.
+    configured: bool,
+    /// Monotonic present-attempt counter for the debug lines.
+    seq: u64,
+    /// Debug error lines printed so far (rate-limited).
+    err_logged: u32,
 }
 
 impl HostApp {
@@ -109,6 +145,7 @@ impl HostApp {
             title,
             width,
             height,
+            backend: env_backend(),
             buttons: 0,
             cursor: None,
             window: None,
@@ -117,6 +154,9 @@ impl HostApp {
             queue: VecDeque::new(),
             error: None,
             closed: false,
+            configured: false,
+            seq: 0,
+            err_logged: 0,
         }
     }
 
@@ -127,6 +167,13 @@ impl HostApp {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// The window has been through its first configure (mapped size or
+    /// redraw request): attach+commit before this point is what the
+    /// xdg-shell spec calls a protocol error.
+    pub(crate) fn is_configured(&self) -> bool {
+        self.configured
     }
 
     pub(crate) fn take_error(&mut self) -> Option<HostError> {
@@ -151,6 +198,20 @@ impl HostApp {
         if self.closed || self.buf.is_empty() {
             return;
         }
+        self.seq += 1;
+        if !self.configured {
+            // Wayland: an attach+commit before the first xdg configure is a
+            // protocol error — and a compositor free to ignore the surface
+            // for good afterwards. Skip until `resumed`+configure landed;
+            // the caller's next dirty Twrdraw re-presents.
+            if present_debug() {
+                eprintln!(
+                    "present#{} backend={} {}x{} skip: not configured yet",
+                    self.seq, self.backend, self.width, self.height
+                );
+            }
+            return;
+        }
         let Some(window) = self.window.as_ref() else {
             return;
         };
@@ -172,6 +233,12 @@ impl HostApp {
             }
             gpu.size = (w, h);
         }
+        if present_debug() {
+            eprintln!(
+                "present#{} backend={} {}x{} buf={} gpu={:?}",
+                self.seq, self.backend, self.width, self.height, self.buf.len(), gpu.size
+            );
+        }
         window.pre_present_notify();
         match gpu.surface.buffer_mut() {
             Ok(mut buffer) => {
@@ -185,10 +252,20 @@ impl HostApp {
                 let len = px.len().min(self.buf.len());
                 px[..len].copy_from_slice(&self.buf[..len]);
                 if let Err(e) = buffer.present() {
+                    if present_debug() && self.err_logged < 5 {
+                        self.err_logged += 1;
+                        eprintln!("present#{} error: {e}", self.seq);
+                    }
                     self.error = Some(HostError::Present(e.to_string()));
                 }
             }
-            Err(e) => self.error = Some(HostError::Present(e.to_string())),
+            Err(e) => {
+                if present_debug() && self.err_logged < 5 {
+                    self.err_logged += 1;
+                    eprintln!("present#{} error: {e}", self.seq);
+                }
+                self.error = Some(HostError::Present(e.to_string()));
+            }
         }
     }
 
@@ -232,6 +309,9 @@ impl ApplicationHandler for HostApp {
             WindowEvent::Resized(size) => {
                 let (w, h) = (size.width, size.height);
                 // Wayland reports 0x0 while minimized; keep the last size.
+                if w > 0 && h > 0 {
+                    self.configured = true;
+                }
                 if w > 0 && h > 0 && (w, h) != (self.width, self.height) {
                     self.width = w;
                     self.height = h;
@@ -293,6 +373,12 @@ impl ApplicationHandler for HostApp {
                 if let Some(c) = event.text.as_ref().and_then(|text| text.chars().next()) {
                     self.queue.push_back(HostEvent::Key(c));
                 }
+            }
+            // Wayland: winit acks the initial configure itself; a redraw
+            // request means the surface is live even when the configured size
+            // matched the requested one and no Resized ever fired.
+            WindowEvent::RedrawRequested => {
+                self.configured = true;
             }
             WindowEvent::CloseRequested => {
                 self.closed = true;

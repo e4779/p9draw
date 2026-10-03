@@ -108,6 +108,17 @@ impl ScreenHost {
             return Err(err);
         }
         if app.window_created() {
+            // Wayland: the first attach+commit must not race the initial xdg
+            // configure. winit acks the configure itself, so pump until the
+            // surface reports configured (first mapped size or redraw),
+            // bounded so a compositor that never configures cannot wedge
+            // `open` — the gate in `present` keeps the surface safe anyway.
+            for _ in 0..64 {
+                if app.is_configured() {
+                    break;
+                }
+                let _ = event_loop.pump_app_events(Some(Duration::from_millis(2)), &mut app);
+            }
             Ok(ScreenHost { event_loop, app })
         } else {
             Err(HostError::WindowInit(
@@ -129,6 +140,13 @@ impl ScreenHost {
     /// No-op before the window exists or after close.
     pub fn present(&mut self) {
         self.app.present();
+    }
+
+    /// The last host error (present/resize failure), if any, clearing it.
+    /// The serve loop logs these: a silently swallowing presenter is how a
+    /// dark window survives unnoticed.
+    pub fn take_error(&mut self) -> Option<HostError> {
+        self.app.take_error()
     }
 
     /// Pump the internal winit loop once (non-blocking) and return the
