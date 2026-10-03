@@ -76,3 +76,36 @@ a live acme session through. Rerror payloads name the failing command:
 parse errors carry the op byte and offset, apply errors are prefixed
 `draw op '<letter>':`. `'v'` is drawflush — a 1-byte op with no id/rect,
 printed as `id=- rect=-`.
+
+### Wayland-native serve window (status 2026-10-03)
+
+The serve window now runs on winit's native Wayland backend instead of
+XWayland. winit 0.30 prefers Wayland whenever `WAYLAND_DISPLAY` resolves, so
+the migration is a launch-env change only (no code touched); the launcher
+lives in `scripts/launch-wayland-serve.sh` (inside acme-web:
+`/tmp/launch-wayland.sh`). Two hard-won gotchas:
+
+- `DISPLAY` must be `unset`, not just overridden. A stray `DISPLAY` leaks from
+  the podman-exec client env through `su` into acme and its devdraw
+  replacement, and winit silently falls back to XWayland.
+- The session sits at `XDG_RUNTIME_DIR=/config/.XDG` (capital `.XDG`, not the
+  conventional `.xdg`), `WAYLAND_DISPLAY=wayland-1`.
+
+Verification is instrumental, because this container cannot take compositor
+screenshots at all (see caveat below): no `p9draw-server` window in
+`xwininfo -root -tree`; the serve process holds a connected socket to
+`/config/.XDG/wayland-1` (peer inode match in `ss -xp`); under
+`WAYLAND_DEBUG=1` the wire trace (`fixtures/wayland-native-wire.log`) shows
+`xdg_surface.get_toplevel` + `set_title("acme")`, `configure` ->
+`ack_configure` -> `wl_surface.attach/commit`, zero protocol errors and 31
+`wl_buffer.release` events -- KWin consumed 31 presented frames. acme stays
+fully functional across the switch (`Tinit` accepted, `Twrdraw/Rwrdraw`
+flowing, `P9DRAW_STATS` counters live). `cargo test` green.
+
+Screenshot caveat: kwin 6.6 authorizes `org.kde.KWin.ScreenShot2` callers by
+matching the caller's `/proc/<pid>/exe` against the `Exec=` of installed
+`.desktop` entries and reading `X-KDE-DBUS-Restricted-Interfaces`
+(`src/utils/serviceutils.h` upstream). This container has no application
+registry at all (sycoca contains zero services) and neither spectacle nor
+xdg-desktop-portal is installed, so no caller -- human or agent -- can pass
+the check. The wire-level frame evidence above is the substitute.

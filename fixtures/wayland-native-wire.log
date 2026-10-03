@@ -1,0 +1,229 @@
+[1942714.243]  -> wl_display#1.get_registry(new id wl_registry#2)
+[1942714.331]  -> wl_display#1.sync(new id wl_callback#3)
+[1942715.192] {Display Queue} wl_display#1.delete_id(3)
+[1942715.247] wl_registry#2.global(1, "zwp_linux_dmabuf_v1", 5)
+[1942715.278] wl_registry#2.global(2, "wl_compositor", 5)
+[1942715.293] wl_registry#2.global(3, "wl_subcompositor", 1)
+[1942715.307] wl_registry#2.global(4, "wp_fractional_scale_manager_v1", 1)
+[1942715.327] wl_registry#2.global(5, "wl_shm", 2)
+[1942715.342] wl_registry#2.global(6, "zxdg_output_manager_v1", 3)
+[1942715.356] wl_registry#2.global(7, "xdg_wm_base", 6)
+[1942715.370] wl_registry#2.global(8, "zwlr_layer_shell_v1", 5)
+[1942715.386] wl_registry#2.global(9, "wl_data_device_manager", 3)
+[1942715.404] wl_registry#2.global(10, "zwlr_data_control_manager_v1", 2)
+[1942715.419] wl_registry#2.global(11, "zwp_virtual_keyboard_manager_v1", 1)
+[1942715.434] wl_registry#2.global(12, "wp_pointer_warp_v1", 1)
+[1942715.447] wl_registry#2.global(13, "zwp_relative_pointer_manager_v1", 1)
+[1942715.461] wl_registry#2.global(14, "zwp_pointer_constraints_v1", 1)
+[1942715.474] wl_registry#2.global(15, "ext_foreign_toplevel_list_v1", 1)
+[1942715.487] wl_registry#2.global(16, "zxdg_decoration_manager_v1", 1)
+[1942715.500] wl_registry#2.global(17, "wp_single_pixel_buffer_manager_v1", 1)
+[1942715.514] wl_registry#2.global(18, "wp_viewporter", 1)
+[1942715.546] wl_registry#2.global(19, "wp_presentation", 2)
+[1942715.559] wl_registry#2.global(20, "xdg_activation_v1", 1)
+[1942715.573] wl_registry#2.global(21, "zwp_primary_selection_device_manager_v1", 1)
+[1942715.586] wl_registry#2.global(22, "wl_seat", 9)
+[1942715.599] wl_registry#2.global(23, "wl_output", 4)
+[1942715.612] wl_callback#3.done(0)
+[1942715.769]  -> wl_registry#2.bind(2, "wl_compositor", 5, new id [unknown]#3)
+[1942715.805]  -> wl_registry#2.bind(3, "wl_subcompositor", 1, new id [unknown]#4)
+[1942715.842]  -> wl_registry#2.bind(23, "wl_output", 4, new id [unknown]#5)
+[1942715.861]  -> wl_registry#2.bind(6, "zxdg_output_manager_v1", 3, new id [unknown]#6)
+[1942715.897]  -> zxdg_output_manager_v1#6.get_xdg_output(new id zxdg_output_v1#7, wl_output#5)
+[1942715.929]  -> wl_registry#2.bind(22, "wl_seat", 7, new id [unknown]#8)
+[1942715.970]  -> wl_registry#2.bind(4, "wp_fractional_scale_manager_v1", 1, new id [unknown]#9)
+[1942715.992]  -> wl_registry#2.bind(18, "wp_viewporter", 1, new id [unknown]#10)
+[1942716.029]  -> wl_registry#2.bind(5, "wl_shm", 1, new id [unknown]#11)
+[1942716.095]  -> wl_shm#11.create_pool(new id wl_shm_pool#12, fd 9, 2)
+[1942716.156]  -> wl_registry#2.bind(7, "xdg_wm_base", 6, new id [unknown]#13)
+[1942716.177]  -> wl_registry#2.bind(16, "zxdg_decoration_manager_v1", 1, new id [unknown]#14)
+[1942716.205]  -> wl_registry#2.bind(20, "xdg_activation_v1", 1, new id [unknown]#15)
+[1942716.226]  -> wl_registry#2.bind(13, "zwp_relative_pointer_manager_v1", 1, new id [unknown]#16)
+[1942716.246]  -> wl_registry#2.bind(14, "zwp_pointer_constraints_v1", 1, new id [unknown]#17)
+[1942716.267]  -> wl_display#1.sync(new id wl_callback#18)
+[1942719.819] {Display Queue} wl_display#1.delete_id(18)
+[1942719.873] wl_output#5.geometry(0, 0, 1024, 768, 0, "Pixelflux", "Virtual", 0)
+[1942719.916] wl_output#5.mode(0, 1024, 768, 60000)
+[1942719.931] wl_output#5.mode(0, 2960, 1726, 60000)
+[1942719.943] wl_output#5.mode(3, 2960, 1724, 60000)
+[1942719.955] wl_output#5.mode(0, 3442, 1880, 60000)
+[1942719.967] wl_output#5.mode(0, 3440, 1880, 60000)
+[1942719.979] wl_output#5.mode(0, 3368, 2216, 60000)
+[1942719.990] wl_output#5.mode(0, 3368, 2218, 60000)
+[1942720.001] wl_output#5.mode(0, 3024, 1714, 60000)
+[1942720.019] wl_output#5.mode(0, 3024, 1712, 60000)
+[1942720.033] wl_output#5.name("HEADLESS-1")
+[1942720.046] wl_output#5.description("Pixelflux - Virtual - HEADLESS-1")
+[1942720.058] wl_output#5.scale(2)
+[1942720.069] wl_output#5.done()
+[1942720.079] zxdg_output_v1#7.logical_position(0, 0)
+[1942720.091] zxdg_output_v1#7.logical_size(1480, 862)
+[1942720.103] zxdg_output_v1#7.name("HEADLESS-1")
+[1942720.119] zxdg_output_v1#7.description("Pixelflux - Virtual - HEADLESS-1")
+[1942720.133] wl_output#5.done()
+[1942720.148] wl_seat#8.name("seat0")
+[1942720.154] wl_seat#8.capabilities(3)
+[1942720.162] wl_shm#11.format(0)
+[1942720.167] wl_shm#11.format(1)
+[1942720.172] wl_callback#18.done(0)
+[1942720.203]  -> wl_seat#8.get_keyboard(new id wl_keyboard#18)
+[1942726.225]  -> wl_compositor#3.create_surface(new id wl_surface#19)
+[1942726.270]  -> wp_viewporter#10.get_viewport(new id wp_viewport#20, wl_surface#19)
+[1942726.295]  -> wl_seat#8.get_pointer(new id wl_pointer#21)
+[1942726.320]  -> zwp_relative_pointer_manager_v1#16.get_relative_pointer(new id zwp_relative_pointer_v1#22, wl_pointer#21)
+[1942726.396]  -> wl_compositor#3.create_surface(new id wl_surface#23)
+[1942726.416]  -> xdg_wm_base#13.get_xdg_surface(new id xdg_surface#24, wl_surface#23)
+[1942726.431]  -> xdg_surface#24.get_toplevel(new id xdg_toplevel#25)
+[1942726.445]  -> zxdg_decoration_manager_v1#14.get_toplevel_decoration(new id zxdg_toplevel_decoration_v1#26, xdg_toplevel#25)
+[1942726.459]  -> zxdg_toplevel_decoration_v1#26.set_mode(2)
+[1942726.471]  -> wp_viewporter#10.get_viewport(new id wp_viewport#27, wl_surface#23)
+[1942726.485]  -> wp_fractional_scale_manager_v1#9.get_fractional_scale(new id wp_fractional_scale_v1#28, wl_surface#23)
+[1942726.500]  -> wl_compositor#3.create_region(new id wl_region#29)
+[1942726.515]  -> wl_region#29.add(0, 0, 2147483647, 2147483647)
+[1942726.529]  -> wl_surface#23.set_opaque_region(wl_region#29)
+[1942726.535]  -> wl_region#29.destroy()
+[1942726.543]  -> xdg_toplevel#25.set_title("acme")
+[1942726.550]  -> xdg_toplevel#25.set_min_size(2, 1)
+[1942726.555]  -> xdg_toplevel#25.set_max_size(0, 0)
+[1942726.561]  -> wl_surface#23.commit()
+[1942726.568]  -> wl_display#1.sync(new id wl_callback#30)
+[1942726.863] {Display Queue} wl_display#1.delete_id(29)
+[1942726.875] {Display Queue} wl_display#1.delete_id(30)
+[1942726.880] wl_keyboard#18.keymap(1, fd 11, 34206)
+[1942726.892] wl_keyboard#18.repeat_info(25, 200)
+[1942726.898] zxdg_toplevel_decoration_v1#26.configure(2)
+[1942726.903] xdg_toplevel#25.configure_bounds(0, 0)
+[1942726.909] xdg_toplevel#25.wm_capabilities(array[16])
+[1942726.914] xdg_toplevel#25.configure(0, 0, array[0])
+[1942726.919] xdg_surface#24.configure(228)
+[1942726.924] xdg_toplevel#25.configure(0, 0, array[0])
+[1942726.929] xdg_surface#24.configure(229)
+[1942726.934] wp_fractional_scale_v1#28.preferred_scale(240)
+[1942726.938] wl_surface#23.enter(wl_output#5)
+[1942726.944] xdg_toplevel#25.configure(1480, 862, array[8])
+[1942726.949] xdg_surface#24.configure(230)
+[1942726.953] wl_keyboard#18.enter(15321, wl_surface#23, array[0])
+[1942726.959] wl_keyboard#18.modifiers(15321, 0, 0, 0, 0)
+[1942726.964] wl_callback#30.done(0)
+[1942728.913]  -> xdg_surface#24.ack_configure(228)
+[1942728.960]  -> wl_compositor#3.create_region(new id wl_region#30)
+[1942728.979]  -> wl_region#30.add(0, 0, 2147483647, 2147483647)
+[1942728.992]  -> wl_surface#23.set_opaque_region(wl_region#30)
+[1942729.000]  -> wl_region#30.destroy()
+[1942729.009]  -> xdg_surface#24.set_window_geometry(0, 0, 1800, 1400)
+[1942729.022]  -> wp_viewport#27.set_destination(1800, 1400)
+[1942729.033]  -> xdg_surface#24.ack_configure(229)
+[1942729.048]  -> xdg_surface#24.ack_configure(230)
+[1942729.057]  -> wl_compositor#3.create_region(new id wl_region#29)
+[1942729.065]  -> wl_region#29.add(0, 0, 2147483647, 2147483647)
+[1942729.074]  -> wl_surface#23.set_opaque_region(wl_region#29)
+[1942729.081]  -> wl_region#29.destroy()
+[1942729.089]  -> xdg_surface#24.set_window_geometry(0, 0, 1480, 862)
+[1942729.097]  -> wp_viewport#27.set_destination(1480, 862)
+[1942729.121]  -> wl_display#1.get_registry(new id wl_registry#31)
+[1942729.132]  -> wl_display#1.sync(new id wl_callback#32)
+[1942729.249] {Display Queue} wl_display#1.delete_id(30)
+[1942729.257] {Display Queue} wl_display#1.delete_id(29)
+[1942729.262] {Display Queue} wl_display#1.delete_id(32)
+[1942729.267] wl_registry#31.global(1, "zwp_linux_dmabuf_v1", 5)
+[1942729.276] wl_registry#31.global(2, "wl_compositor", 5)
+[1942729.282] wl_registry#31.global(3, "wl_subcompositor", 1)
+[1942729.295] wl_registry#31.global(4, "wp_fractional_scale_manager_v1", 1)
+[1942729.312] wl_registry#31.global(5, "wl_shm", 2)
+[1942729.318] wl_registry#31.global(6, "zxdg_output_manager_v1", 3)
+[1942729.323] wl_registry#31.global(7, "xdg_wm_base", 6)
+[1942729.328] wl_registry#31.global(8, "zwlr_layer_shell_v1", 5)
+[1942729.334] wl_registry#31.global(9, "wl_data_device_manager", 3)
+[1942729.339] wl_registry#31.global(10, "zwlr_data_control_manager_v1", 2)
+[1942729.344] wl_registry#31.global(11, "zwp_virtual_keyboard_manager_v1", 1)
+[1942729.350] wl_registry#31.global(12, "wp_pointer_warp_v1", 1)
+[1942729.355] wl_registry#31.global(13, "zwp_relative_pointer_manager_v1", 1)
+[1942729.360] wl_registry#31.global(14, "zwp_pointer_constraints_v1", 1)
+[1942729.365] wl_registry#31.global(15, "ext_foreign_toplevel_list_v1", 1)
+[1942729.370] wl_registry#31.global(16, "zxdg_decoration_manager_v1", 1)
+[1942729.375] wl_registry#31.global(17, "wp_single_pixel_buffer_manager_v1", 1)
+[1942729.381] wl_registry#31.global(18, "wp_viewporter", 1)
+[1942729.386] wl_registry#31.global(19, "wp_presentation", 2)
+[1942729.391] wl_registry#31.global(20, "xdg_activation_v1", 1)
+[1942729.397] wl_registry#31.global(21, "zwp_primary_selection_device_manager_v1", 1)
+[1942729.402] wl_registry#31.global(22, "wl_seat", 9)
+[1942729.407] wl_registry#31.global(23, "wl_output", 4)
+[1942729.413] wl_callback#32.done(0)
+[1942729.421]  -> wl_registry#31.bind(5, "wl_shm", 1, new id [unknown]#32)
+[1942741.009]  -> wl_surface#23.frame(new id wl_callback#29)
+[1942741.084]  -> wl_shm#32.create_pool(new id wl_shm_pool#30, fd 14, 33554432)
+[1942741.096]  -> wl_shm_pool#30.create_buffer(new id wl_buffer#33, 0, 2960, 1724, 11840, 1)
+[1942741.115]  -> wl_shm#32.create_pool(new id wl_shm_pool#34, fd 16, 33554432)
+[1942741.123]  -> wl_shm_pool#34.create_buffer(new id wl_buffer#35, 0, 2960, 1724, 11840, 1)
+[1942755.582] wl_shm#32.format(0)
+[1942755.614] wl_shm#32.format(1)
+[1942755.628]  -> wl_surface#23.attach(wl_buffer#35, 0, 0)
+[1942755.637]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1942755.643]  -> wl_surface#23.commit()
+1791007600154 serve: Tinit winsize="" label="acme"
+[1942771.794]  -> wl_surface#23.attach(wl_buffer#33, 0, 0)
+[1942771.827]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1942771.834]  -> wl_surface#23.commit()
+1791007600171 cmd op=J id=0 rect=- bytes=0  | Image0Screen
+1791007600171 cmd op=I id=0 rect=- bytes=0  | ReadInfo
+1791007600171 cmd op=q id=- rect=- bytes=1  | Query { specs: [100] }
+1791007600171 cmd op=b id=1 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 1, screen_id: 0, refresh: 0, chan: 49, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 4294967295 }
+1791007600171 probe op=b img=1(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+1791007600171 cmd op=b id=2 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 2, screen_id: 0, refresh: 0, chan: 49, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 255 }
+1791007600171 probe op=b img=2(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[000000ff,000000ff,000000ff,000000ff]
+1791007600240 cmd op=A id=1 rect=- bytes=0  | AllocScreen { id: 1, image_id: 0, fill_id: 1, public: 0 }
+1791007600240 cmd op=b id=3 rect=(0,0)-(2960,1724) bytes=0  | Allocate { id: 3, screen_id: 1, refresh: 1, chan: 1745360936, repl: 0, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 2960, y: 1724 } }, clip_r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 2960, y: 1724 } }, value: 4294967295 }
+1791007600258 probe op=b img=3(dst) rect=(0,0)-(2960,1724) before=[gone,gone,gone,gone] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+[1942941.274] wl_buffer#35.release()
+[1942946.384]  -> wl_surface#23.attach(wl_buffer#35, 0, 0)
+[1942946.433]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1942946.443]  -> wl_surface#23.commit()
+1791007600345 cmd op=d id=3 rect=(0,0)-(2960,1724) bytes=0  | Draw { dst_id: 3, src_id: 1, mask_id: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 2960, y: 1724 } }, src_pt: Point { x: 0, y: 0 }, mask_pt: Point { x: 0, y: 0 } }
+1791007600635 probe op=d img=3(dst) rect=(0,0)-(2960,1724) before=[ffffffff,ffffffff,ffffffff,ffffffff] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+1791007600635 cmd op=v id=- rect=- bytes=0  | Flush
+[1943306.816] wl_buffer#33.release()
+[1943310.956]  -> wl_surface#23.attach(wl_buffer#33, 0, 0)
+[1943311.009]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1943311.018]  -> wl_surface#23.commit()
+1791007600711 cmd op=b id=4 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 4, screen_id: 0, refresh: 0, chan: 56, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 1061109759 }
+1791007600711 probe op=b img=4(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[3f3f3fff,3f3f3fff,3f3f3fff,3f3f3fff]
+1791007600711 cmd op=b id=5 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 5, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 2868903935 }
+1791007600711 probe op=b img=5(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[aaffffff,aaffffff,aaffffff,aaffffff]
+1791007600712 cmd op=b id=6 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 6, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 4294967295 }
+1791007600712 probe op=b img=6(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+1791007600712 cmd op=d id=6 rect=(0,0)-(1,1) bytes=0  | Draw { dst_id: 6, src_id: 5, mask_id: 4, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, src_pt: Point { x: 0, y: 0 }, mask_pt: Point { x: 0, y: 0 } }
+1791007600712 probe op=d img=6(dst) rect=(0,0)-(1,1) before=[ffffffff,ffffffff,ffffffff,ffffffff] after=[eaffffff,eaffffff,eaffffff,eaffffff]
+[1943380.097] wl_buffer#35.release()
+[1943383.073]  -> wl_surface#23.attach(wl_buffer#35, 0, 0)
+[1943383.106]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1943383.113]  -> wl_surface#23.commit()
+1791007600782 cmd op=f id=5 rect=- bytes=0  | Free { id: 5 }
+1791007600782 cmd op=b id=7 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 7, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 2666458879 }
+1791007600782 probe op=b img=7(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[9eeeeeff,9eeeeeff,9eeeeeff,9eeeeeff]
+1791007600782 cmd op=b id=8 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 8, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 2290666751 }
+1791007600782 probe op=b img=8(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[8888ccff,8888ccff,8888ccff,8888ccff]
+1791007600782 cmd op=b id=9 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 9, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 4294945535 }
+1791007600782 probe op=b img=9(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[ffffaaff,ffffaaff,ffffaaff,ffffaaff]
+1791007600782 cmd op=b id=10 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 10, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 4294967295 }
+1791007600782 probe op=b img=10(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+1791007600783 cmd op=d id=10 rect=(0,0)-(1,1) bytes=0  | Draw { dst_id: 10, src_id: 9, mask_id: 4, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, src_pt: Point { x: 0, y: 0 }, mask_pt: Point { x: 0, y: 0 } }
+1791007600783 probe op=d img=10(dst) rect=(0,0)-(1,1) before=[ffffffff,ffffffff,ffffffff,ffffffff] after=[ffffeaff,ffffeaff,ffffeaff,ffffeaff]
+[1943449.660] wl_buffer#33.release()
+[1943453.028]  -> wl_surface#23.attach(wl_buffer#33, 0, 0)
+[1943453.060]  -> wl_surface#23.damage_buffer(0, 0, 2960, 1724)
+[1943453.067]  -> wl_surface#23.commit()
+1791007600852 cmd op=f id=9 rect=- bytes=0  | Free { id: 9 }
+1791007600852 cmd op=b id=11 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 11, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 4008615679 }
+1791007600852 probe op=b img=11(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[eeee9eff,eeee9eff,eeee9eff,eeee9eff]
+1791007600852 cmd op=b id=12 rect=(0,0)-(1,1) bytes=0  | Allocate { id: 12, screen_id: 0, refresh: 0, chan: 1745360936, repl: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 1, y: 1 } }, clip_r: Rect { min: Point { x: 3221225473, y: 3221225473 }, max: Point { x: 1073741823, y: 1073741823 } }, value: 2576960767 }
+1791007600852 probe op=b img=12(dst) rect=(0,0)-(1,1) before=[gone,gone,gone,gone] after=[99994cff,99994cff,99994cff,99994cff]
+1791007600853 cmd op=b id=13 rect=(0,0)-(17,27) bytes=0  | Allocate { id: 13, screen_id: 0, refresh: 0, chan: 1745360936, repl: 0, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 17, y: 27 } }, clip_r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 17, y: 27 } }, value: 4294967040 }
+1791007600853 probe op=b img=13(dst) rect=(0,0)-(17,27) before=[gone,gone,gone,gone] after=[ffffffff,ffffffff,ffffffff,ffffffff]
+1791007600853 cmd op=d id=13 rect=(0,0)-(17,27) bytes=0  | Draw { dst_id: 13, src_id: 6, mask_id: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 17, y: 27 } }, src_pt: Point { x: 0, y: 0 }, mask_pt: Point { x: 0, y: 0 } }
+1791007600853 probe op=d img=13(dst) rect=(0,0)-(17,27) before=[ffffffff,ffffffff,ffffffff,ffffffff] after=[eaffffff,eaffffff,eaffffff,eaffffff]
+1791007600853 cmd op=d id=13 rect=(0,0)-(17,3) bytes=0  | Draw { dst_id: 13, src_id: 8, mask_id: 1, r: Rect { min: Point { x: 0, y: 0 }, max: Point { x: 17, y: 3 } }, src_pt: Point { x: 0, y: 0 }, mask_pt: Point { x: 0, y: 0 } }
+1791007600853 probe op=d img=13(dst) rect=(0,0)-(17,3) before=[eaffffff,eaffffff,eaffffff,eaffffff] after=[8888ccff,8888ccff,8888ccff,8888ccff]
+1791007600853 cmd op=d id=13 rect=(0,24)-(17,27) bytes=0  | Draw { dst_id: 13, src_id: 8, mask_id: 1, r: Rect { min: Point { x: 0, y: 24 }, max: Point { x: 17, y: 27 } }, src_pt: Point { x: 0, y: 24 }, mask_pt: Point { x: 0, y: 24 } }
+1791007600853 probe op=d img=13(dst) rect=(0,24)-(17,27) before=[eaffffff,eaffffff,eaffffff,eaffffff] after=[8888ccff,8888ccff,8888ccff,8888ccff]
+1791007600853 cmd op=d id=13 rect=(0,3)-(3,24) bytes=0  | Draw { dst_id: 13, src_id: 8, mask_id: 1, r: Rect { min: Point { x: 0, y: 3 }, max: Point { x: 3, y: 24 } }, src_pt: Point { x: 0, y: 3 }, mask_pt: P
+... [snip: 283KB total, frames/commits continue identically] ...
