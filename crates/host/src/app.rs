@@ -251,6 +251,12 @@ impl HostApp {
                 };
                 let len = px.len().min(self.buf.len());
                 px[..len].copy_from_slice(&self.buf[..len]);
+                // plan9 x8r8g8b8 carries a don't-care 4th byte; Wayland reads
+                // it as alpha. Force opaque: without this the whole window is
+                // see-through on native Wayland (the "dark window" bug).
+                for px32 in px[..len].chunks_exact_mut(4) {
+                    px32[3] = 0xFF;
+                }
                 if let Err(e) = buffer.present() {
                     if present_debug() && self.err_logged < 5 {
                         self.err_logged += 1;

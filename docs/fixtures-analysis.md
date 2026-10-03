@@ -1,3 +1,11 @@
+---
+type: research
+title: Разбор живого захвата acme (fixtures/live-acme)
+generated:
+  by: human:e4779
+  at: "2026-10-03T18:14:16Z"
+---
+
 # Разбор живого захвата acme — fixtures/live-acme (2026-10-01)
 
 Источник: реальный plan9port-acme, запущенный через MITM-обёртку

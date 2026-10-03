@@ -1,111 +1,70 @@
-# p9draw
+# p9draw — draw-protocol server for plan9port acme
 
-Pure-Rust implementation of the plan9port devdraw wire protocol
-(drawfcall / `Wsysmsg`, `SPEC.md`) and its observation tooling:
+A Rust implementation of the plan9port **devdraw** wire protocol: the classic
+acme text editor (1993, C) draws into windows served by this server — on X11
+and as a **native Wayland client**.
 
-- `crates/protocol` — codec: all 33 message types, the inner little-endian
-  draw stream, golden-byte tests. No IO, no dependencies.
-- `crates/render` — memdraw-semantics raster (images, compose, fill) over
-  byte planes.
-- `crates/host` — real window (winit + softbuffer).
-- `crates/server` — `serve` (devdraw replacement on the legacy pipe,
-  SPEC.md §2.1: drawfcall in on stdin, replies on stdout, acme renders
-  into a real window), plus `observe` / `capture` / `capture-pipe` and
-  `scripts/devdraw-tee.sh`.
+## Status — brick 1 complete
 
-Test: `cargo test --workspace` — offline unit tests (golden bytes,
-roundtrips, render semantics) plus fixture tests over live captures
-(`docs/fixtures-analysis.md`).
+Verified live (2026-10-03/04): plan9port acme runs fully against this server —
+windows, columns, tags with antialiased text, all three mouse buttons, drags,
+execution (+Errors), resizes. Verified end-to-end including the per-window
+H.264 stream of the [Greenfield-style browser compositor](https://github.com/udevbe/greenfield)
+(decoded the actual stream: 1817 dark text pixels).
 
-## End-to-end test
+Current gaps (roadmap): HiDPI font sizes (fontsrv wired, size tuning pending),
+screen-size propagation on first layout, wgpu backend horizon.
 
-`crates/server/examples/e2e.rs` is a synthetic drawfcall client speaking
-the real wire protocol over the stdin/stdout of the `serve` subcommand —
-the exact fd pair a plan9port client dup2()s its pipe onto. Steps, each
-printed as PASSED / SKIP / FAILED (exit 0 unless a step FAILED):
+## Layout
 
-1. `init` — `Tinit` → `Rinit`;
-2. `alloc` — Twrdraw `'b'`: image 1, whole-screen rect, XRGB32, value =
-   DPaleyellow `0xFFFFAAFF` (the image is born filled — allocimage fill
-   semantics);
-3. `fill` — Twrdraw `'d'` src=1 over image 0 across the whole screen plus
-   `'v'` flush in one stream (count = 45+1 = 46, like the live capture);
-4. `text` — Twrdraw font ops: 'b' GREY1 cache image + `'i'` (nchars,
-   ascent), 'b' GREY1 bits image + `'y'` rows, two `'l'` glyph loads,
-   'b' black/white 1×1 repl tiles, then one `'x'` stringbg + `'v'`;
-5. `readback` — Twrdraw `'r'` over the text region + `Trddraw`: the
-   'x' background rect (Σwidth×Dy(font image) at the baseline) must be
-   white, the glyph cells black, the surround paleyellow `[AA FF FF 00]`;
-6. `mouse` — `Tbouncemouse` then `Trdmouse` → `Rrdmouse` within 5 s;
-   **SKIP without an X display**, so the harness stays CI-safe.
+| path | what |
+|---|---|
+| `crates/protocol` | drawfcall wire codec (33 wsysmsg types + inner draw commands, incl. plan9 compressed images `'Y'`) |
+| `crates/render` | software raster: images, chans, fill/compose/tile, grey masks |
+| `crates/host` | winit 0.30 + softbuffer 0.4 window host (X11 + native Wayland) |
+| `crates/server` | the serve binary: wire dispatch, image store, screen composite, stats/trace/present-debug |
+| `docs/SPEC.md` | the wire protocol specification (verified against real acme captures) |
+| `docs/ARCHITECTURE.md` | crate map and data flow |
+| `docs/DEBUG-NOTES.md` | the dark-window investigation record (evidence file) |
+| `docs/*.md, docs/_sources/` | the OKF knowledge bundle: acme lineage research (ad, edward, wily, fleet, Greenfield, waypipe, ...) and the project diary (roadmap-devdraw.md) |
 
-Build and run (headless: every step honestly SKIPs, exit 0):
+## Run
 
-    cargo build --bins --examples
-    cargo run --example e2e -p p9draw-server
+```sh
+cargo test                      # 152+ tests, no display needed
+cargo run -p p9draw-server -- serve   # with a Wayland/X display
+```
 
-The serve binary is searched in `target/{release,debug}`; point
-`P9DRAW_SERVER_BIN` at it explicitly when it lives elsewhere.
+### Live acme against this server (native Wayland, container)
 
-### Full run in the acme-web container
+See `scripts/launch-wayland-serve.sh` and the README section on the
+Wayland-native serve window. The client-side acme needs `PLAN9` pointing at
+the plan9port tree and `P9DRAW_SERVE=1 P9DRAW_SERVER_BIN=<p9draw-server>`
+(the bin/devdraw wrapper routes it to us).
 
-The full PASSED path needs the container's X server (`DISPLAY=:1`). The
-deploy (main agent) puts the binaries at `/config/plan9port/bin/`; copy
-the freshly built example next to them and run it there:
+### E2E harness (synthetic client, spawns its own serve)
 
-    cargo build --release --bins --examples
-    doas podman cp target/release/p9draw-server acme-web:/config/plan9port/bin/p9draw-server
-    doas podman cp target/release/examples/e2e acme-web:/config/plan9port/bin/e2e
-    doas podman exec acme-web bash -c 'chmod 755 /config/plan9port/bin/p9draw-server /config/plan9port/bin/e2e && \
-      DISPLAY=:1 P9DRAW_SERVE=1 NAMESPACE=/tmp/ns.abc.serve \
-      P9DRAW_SERVER_BIN=/config/plan9port/bin/p9draw-server \
-      /config/plan9port/bin/e2e'
+```sh
+cargo build --release -p p9draw-server --examples
+DISPLAY=:0 P9DRAW_SERVE=1 P9DRAW_SERVER_BIN=$PWD/target/release/p9draw-server \
+  target/release/examples/e2e
+```
 
-`P9DRAW_SERVE=1` and `NAMESPACE` mirror the live acme environment
-(`devdraw-tee.sh` serve branch); the harness itself talks to `serve`
-over stdio and needs neither socket nor namespace.
+Ten steps: init/alloc/fill/text/readback/mouse/window composite — PASSED/FAILED per step.
 
-The example sets `P9DRAW_STATS=1` for the child, so its stderr ends with
-the serve stats line — per-type frame counters (`type: count, bytes`),
-printed every 30 s and once more at exit (`crates/server/src/stats.rs`).
+## Deploy checklist (containers)
 
-The other serve diagnostic is `P9DRAW_TRACE=1`: one log line per applied
-draw command — op letter, image id, rect, data byte count
-(`crates/server/src/trace.rs`). Off by default; this is the lens to read
-a live acme session through. Rerror payloads name the failing command:
-parse errors carry the op byte and offset, apply errors are prefixed
-`draw op '<letter>':`. `'v'` is drawflush — a 1-byte op with no id/rect,
-printed as `id=- rect=-`.
+1. `touch crates/*/src/*.rs` before release builds — cargo mtime cache has
+   thrice served stale binaries after agent edits (verify: `strings bin | grep -c "serve stats"`).
+2. Restart the RUNNING serve process after deploy — a replaced file does not
+   restart anything (the "dark window" root cause).
+3. `unset DISPLAY` for native Wayland (a leaked DISPLAY silently selects X11).
+4. wayvnc/noVNC stack: see the tiling-browser notes in docs/.
 
-### Wayland-native serve window (status 2026-10-03)
+## Docs map
 
-The serve window now runs on winit's native Wayland backend instead of
-XWayland. winit 0.30 prefers Wayland whenever `WAYLAND_DISPLAY` resolves, so
-the migration is a launch-env change only (no code touched); the launcher
-lives in `scripts/launch-wayland-serve.sh` (inside acme-web:
-`/tmp/launch-wayland.sh`). Two hard-won gotchas:
-
-- `DISPLAY` must be `unset`, not just overridden. A stray `DISPLAY` leaks from
-  the podman-exec client env through `su` into acme and its devdraw
-  replacement, and winit silently falls back to XWayland.
-- The session sits at `XDG_RUNTIME_DIR=/config/.XDG` (capital `.XDG`, not the
-  conventional `.xdg`), `WAYLAND_DISPLAY=wayland-1`.
-
-Verification is instrumental, because this container cannot take compositor
-screenshots at all (see caveat below): no `p9draw-server` window in
-`xwininfo -root -tree`; the serve process holds a connected socket to
-`/config/.XDG/wayland-1` (peer inode match in `ss -xp`); under
-`WAYLAND_DEBUG=1` the wire trace (`fixtures/wayland-native-wire.log`) shows
-`xdg_surface.get_toplevel` + `set_title("acme")`, `configure` ->
-`ack_configure` -> `wl_surface.attach/commit`, zero protocol errors and 31
-`wl_buffer.release` events -- KWin consumed 31 presented frames. acme stays
-fully functional across the switch (`Tinit` accepted, `Twrdraw/Rwrdraw`
-flowing, `P9DRAW_STATS` counters live). `cargo test` green.
-
-Screenshot caveat: kwin 6.6 authorizes `org.kde.KWin.ScreenShot2` callers by
-matching the caller's `/proc/<pid>/exe` against the `Exec=` of installed
-`.desktop` entries and reading `X-KDE-DBUS-Restricted-Interfaces`
-(`src/utils/serviceutils.h` upstream). This container has no application
-registry at all (sycoca contains zero services) and neither spectacle nor
-xdg-desktop-portal is installed, so no caller -- human or agent -- can pass
-the check. The wire-level frame evidence above is the substitute.
+Engineering docs live in this repo (`docs/`). The research knowledge base
+(the acme lineage: ad, edward, wily, fleet, Greenfield, waypipe, the three
+delivery schools) and the full project diary are in the companion OKF bundle
+(`docs/` — concepts + `roadmap-devdraw.md`), maintained with the
+[Open Knowledge Format](https://github.com/e4779/okf) tooling.
