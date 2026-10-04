@@ -17,6 +17,5 @@ podman run -d --name desk --network systemd-homelab \
   -v /srv/homelab/desk/custom-cont-init.d:/custom-cont-init.d \
   -v /srv/homelab/desk/custom-cont-init.d/40-desk-config.sh:/custom-cont-init.d/40-desk-config.sh:ro \
   -v /srv/homelab/desk/custom-cont-init.d/41-agent-links.sh:/custom-cont-init.d/41-agent-links.sh:ro \
-  -v /home/e4779/.bun:/home/abc/.bun \
-  -v /home/e4779/.pi:/home/abc/.pi \
+  -v /home/e4779:/home/e4779 \
   localhost/desk:v1

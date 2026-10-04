@@ -1,6 +1,5 @@
 #!/bin/sh
-# expose the HOST pi agent inside the desk terminal (native, no ssh):
-# ~/.bun and ~/.pi are bind-mounted by run-desk.sh (same uid 1000).
-printf '#!/bin/sh\nexport HOME=/home/abc\nexport BUN_INSTALL=/home/abc/.bun\nexec /home/abc/.bun/bin/bun /home/abc/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js "$@"\n' > /usr/local/bin/pi
-printf '#!/bin/sh\nexport HOME=/home/abc\nexport BUN_INSTALL=/home/abc/.bun\nexec /home/abc/.bun/bin/bun "$@"\n' > /usr/local/bin/bun
+# pi via the host home mounted at the same path; bun is in the mounted .bun.
+ln -sf /home/e4779/.bun/bin/bun /usr/local/bin/bun
+printf '#!/bin/sh\nexec /home/e4779/.bun/bin/bun /home/e4779/.bun/install/global/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js "$@"\n' > /usr/local/bin/pi
 chmod +x /usr/local/bin/pi /usr/local/bin/bun

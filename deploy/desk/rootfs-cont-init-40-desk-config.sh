@@ -14,9 +14,9 @@ cat > /config/.config/labwc/rc.xml <<'XML'
   <keybind key="W-Return"><action name="Execute" command="foot"/></keybind>
   <root-menu>
     <item label="Acme" execute="/usr/local/bin/launch-desk-acme.sh" />
-    <item label="Terminal" execute="foot" />
-    <item label="Browser" execute="chromium" />
-    <item label="pi-web" execute="chromium http://192.168.1.3:8504" />
+    <item label="Terminal" execute="sh -c &apos;export HOME=/home/e4779; cd; exec foot&apos;" />
+    <item label="Browser" execute="sh -c &apos;export HOME=/home/e4779; exec chromium&apos;" />
+    <item label="pi-web" execute="sh -c &apos;export HOME=/home/e4779; exec chromium http://192.168.1.3:8504&apos;" />
     <item label="Reconfigure" execute="labwc -r" />
   </root-menu>
 </labwc_config>
