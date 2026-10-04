@@ -1,9 +1,12 @@
 #!/bin/sh
-# desk acme launcher — adapted from scripts/launch-wayland-serve.sh for labwc.
-pkill -x p9draw-server 2>/dev/null; pkill -x 9pserve 2>/dev/null; pkill -x fontsrv 2>/dev/null
+# desk acme launcher — root menu «Acme» / labwc autostart. Kill-and-start semantics:
+# a fresh pair every call, no supervision (Exit = exit, by user decision).
+pkill -x acme 2>/dev/null; pkill -x p9draw-server 2>/dev/null
+pkill -x 9pserve 2>/dev/null; pkill -x fontsrv 2>/dev/null
 sleep 1
 export PLAN9=/config/plan9port
 export NAMESPACE=/tmp/ns.acme.desk
+export HOME=/home/e4779
 mkdir -p "$NAMESPACE" /tmp/serve
 XDG_RUNTIME_DIR=/config/.XDG setsid "$PLAN9/bin/9" fontsrv >/dev/null 2>&1 &
 sleep 3

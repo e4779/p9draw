@@ -1,4 +1,0 @@
-#!/bin/sh
-# acme first: it is the interface. keepalive keeps it alive.
-/usr/local/bin/launch-desk-acme.sh
-nohup /usr/local/bin/desk-acme-keepalive.sh >/dev/null 2>&1 &

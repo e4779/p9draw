@@ -1,36 +1,30 @@
 #!/usr/bin/with-contenv bash
-# desk session supervisor: ONE labwc + acme pair, restarts on death.
-# Replaces the stock xfce session of the webtop image.
+# desk session: labwc as a NESTED compositor on the Selkies capture display.
+#
+# Architecture (verified working 2026-10-04): Selkies' pixelflux owns wayland-1
+# (the scene that gets encoded); labwc renders INTO it as a wayland CLIENT and
+# publishes its own socket (wayland-0) for the apps; Selkies routes input to
+# wayland-0 and captures wayland-1. acme starts ONCE via labwc autostart ->
+# launch-desk-acme.sh (no respawn loops; Exit = exit, by user decision).
 
-pkill -x labwc 2>/dev/null
-pkill -x acme 2>/dev/null
-pkill -x p9draw-server 2>/dev/null
-pkill -x 9pserve 2>/dev/null
-pkill -x fontsrv 2>/dev/null
-pkill -x Xwayland 2>/dev/null
+pkill -x labwc 2>/dev/null; pkill -x acme 2>/dev/null
+pkill -x p9draw-server 2>/dev/null; pkill -x 9pserve 2>/dev/null; pkill -x fontsrv 2>/dev/null
 rm -f /tmp/.X1-lock
 sleep 1
-
 mkdir -p /config/.XDG
 chown -R abc:abc /config/.XDG
 
-while :; do
-  (
-    export XDG_RUNTIME_DIR=/config/.XDG
-    unset DISPLAY WAYLAND_DISPLAY
-    exec s6-setuidgid abc labwc -C /config/.config/labwc/rc.xml
-  ) &
-  LABWC=$!
-
-  for i in $(seq 1 40); do
-    [ -S /config/.XDG/wayland-0 ] && break
-    sleep 0.5
-  done
-
-  while kill -0 $LABWC 2>/dev/null; do
-    s6-setuidgid abc /usr/local/bin/start-desk-acme-alive || \
-      s6-setuidgid abc /usr/local/bin/start-desk-acme.sh
-    sleep 8
-  done
-  sleep 2
+# wait for the Selkies capture display to appear
+for i in $(seq 1 60); do
+  [ -S /config/.XDG/wayland-1 ] && break
+  sleep 0.5
 done
+
+export XDG_RUNTIME_DIR=/config/.XDG
+export WAYLAND_DISPLAY=wayland-1
+export WLR_BACKENDS=wayland
+export WLR_LIBINPUT_NO_DEVICES=1
+# NOTE: no -C: with an explicit config file this labwc build skips the
+# autostart file search; rc.xml lives at the default path anyway.
+unset DISPLAY
+exec s6-setuidgid abc dbus-run-session -- labwc
