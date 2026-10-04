@@ -107,6 +107,10 @@
         <mxCell id="eh2" style="edgeStyle=entityRelationEdgeStyle;curved=1;html=1;endArrow=none;strokeColor=#666666;strokeWidth=1" edge="1" parent="1" source="h1" target="h1b"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="eh3" style="edgeStyle=entityRelationEdgeStyle;curved=1;html=1;endArrow=none;strokeColor=#666666;strokeWidth=1" edge="1" parent="1" source="h1" target="h1c"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="eh4" style="edgeStyle=entityRelationEdgeStyle;curved=1;html=1;endArrow=none;strokeColor=#666666;strokeWidth=1" edge="1" parent="1" source="h1" target="h1d"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="h1e" value="prio (Arcan, rio-стиль)&#10;+ база: webtop:debian-xfce" style="rounded=1;arcSize=50;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11" vertex="1" parent="1">
+          <mxGeometry x="1500" y="880" width="210" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="eh5" style="edgeStyle=entityRelationEdgeStyle;curved=1;html=1;endArrow=none;strokeColor=#666666;strokeWidth=1" edge="1" parent="1" source="h1" target="h1e"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
     </mxGraphModel>
   </diagram>
