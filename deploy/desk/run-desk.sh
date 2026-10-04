@@ -4,7 +4,7 @@
 mkdir -p /srv/homelab/desk/config /srv/homelab/desk/bin
 podman run -d --name desk \
   -p 3007:3000 -p 3008:3001 \
-  -e CUSTOM_USER=e4779 -e PASSWORD=09674390ce80340b9e52 \
+  -e CUSTOM_USER=e4779 -e PASSWORD="$(cat /srv/homelab/desk/desk.secret)" \
   -e TITLE=desk -e SELKIES_ENCODER=x264enc,jpeg \
   -e PIXELFLUX_WAYLAND=true -e DISPLAY= \
   -v /srv/homelab/desk/config:/config \

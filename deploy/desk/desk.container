@@ -8,7 +8,7 @@ ContainerName=desk
 PublishPort=3007:3000
 PublishPort=3008:3001
 Environment=CUSTOM_USER=e4779
-Environment=PASSWORD=09674390ce80340b9e52
+EnvironmentFile=/srv/homelab/desk/desk.secret.env
 Environment=TITLE=desk
 Environment=SELKIES_ENCODER=x264enc,jpeg
 Environment=PIXELFLUX_WAYLAND=true
