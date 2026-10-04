@@ -6,7 +6,8 @@ chown -R abc:abc /config/.XDG
 
 exec s6-setuidgid abc dbus-run-session -- bash -c '
   export XDG_RUNTIME_DIR=/config/.XDG
-  export WAYLAND_DISPLAY=wayland-1
+  export HOME=/home/e4779
   unset DISPLAY
-  exec labwc
+  unset WAYLAND_DISPLAY
+  exec labwc -C /config/.config/labwc/rc.xml
 '
