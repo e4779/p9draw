@@ -11,11 +11,12 @@ podman run -d --name desk \
   -v /srv/homelab/acme-web/plan9port:/config/plan9port \
   -v /srv/homelab/desk/bin/p9draw-server:/usr/local/bin/p9draw-server:ro \
   -v /srv/homelab/desk/rootfs-svc-de-run:/etc/s6-overlay/s6-rc.d/svc-de/run:ro \
-  -v /srv/homelab/desk/rootfs-labwc-rc.xml:/config/.config/labwc/rc.xml:ro \
-  -v /srv/homelab/desk/rootfs-labwc-autostart:/config/.config/labwc/autostart:ro \
   -v /srv/homelab/desk/rootfs-launch-desk-acme.sh:/usr/local/bin/launch-desk-acme.sh:ro \
   -v /srv/homelab/desk/rootfs-desk-acme-keepalive.sh:/usr/local/bin/desk-acme-keepalive.sh:ro \
   -v /srv/homelab/desk/custom-cont-init.d:/custom-cont-init.d \
+  -v /srv/homelab/desk/rootfs-cont-init-40-desk-config.sh:/custom-cont-init.d/40-desk-config.sh:ro \
+  -v /srv/homelab/desk/rootfs-cont-init-41-agent-links.sh:/custom-cont-init.d/41-agent-links.sh:ro \
+
   -v /home/e4779/.bun:/home/abc/.bun \
   -v /home/e4779/.pi:/home/abc/.pi \
   localhost/desk:v1

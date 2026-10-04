@@ -1,0 +1,12 @@
+#!/usr/bin/with-contenv bash
+# desk session: labwc (Wayland) with its socket in the persistent .XDG dir,
+# so the acme launcher (P9DRAW_SERVE) and keepalive can find it.
+mkdir -p /config/.XDG
+chown -R abc:abc /config/.XDG
+
+exec s6-setuidgid abc dbus-run-session -- bash -c '
+  export XDG_RUNTIME_DIR=/config/.XDG
+  export WAYLAND_DISPLAY=wayland-1
+  unset DISPLAY
+  exec labwc
+'

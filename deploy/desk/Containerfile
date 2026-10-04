@@ -1,0 +1,12 @@
+# desk — lean labwc desktop for acme + terminal + browser (Selkies stack)
+# Base: linuxserver webtop debian-xfce — proven Selkies/s6/pulse plumbing;
+# we replace the desktop session (svc-de) with labwc and add the apps.
+FROM lscr.io/linuxserver/webtop:debian-xfce
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      labwc foot chromium fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+# p9draw-server binary and launchers come in as volume mounts
+# (see run-desk.sh) so the image survives p9draw updates without a rebuild.
