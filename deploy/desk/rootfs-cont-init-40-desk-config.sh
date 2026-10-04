@@ -23,8 +23,8 @@ cat > /config/.config/labwc/rc.xml <<'XML'
 XML
 cat > /config/.config/labwc/autostart <<'SH'
 #!/bin/sh
+# acme on boot; manual relaunch: root menu -> Acme (no auto-respawn by design)
 /usr/local/bin/launch-desk-acme.sh
-nohup /usr/local/bin/desk-acme-keepalive.sh >/dev/null 2>&1 &
 SH
 chmod +x /config/.config/labwc/autostart
 chown -R abc:abc /config/.config
