@@ -2,6 +2,8 @@
 name = "p9draw-protocol"
 version = "0.1.0"
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Pure codec for the plan9port devdraw wire protocol (drawfcall/Wsysmsg)"
 
 # std only by design: no external crates, no IO (SPEC.md / ARCHITECTURE.md).

@@ -68,3 +68,7 @@ Engineering docs live in this repo (`docs/`). The research knowledge base
 delivery schools) and the full project diary are in the companion OKF bundle
 (`docs/` — concepts + `roadmap-devdraw.md`), maintained with the
 [Open Knowledge Format](https://github.com/e4779/okf) tooling.
+
+## License
+
+ISC — see [LICENSE](LICENSE).
