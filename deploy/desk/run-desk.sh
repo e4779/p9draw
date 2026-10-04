@@ -2,9 +2,10 @@
 # run-desk.sh — start the desk container (rootful, like acme-web).
 # Build first:  podman build -t localhost/desk:v1 -f deploy/desk/Containerfile deploy/desk
 mkdir -p /srv/homelab/desk/config /srv/homelab/desk/bin
-podman run -d --name desk \
+podman run -d --name desk --network systemd-homelab \
   -p 3007:3000 -p 3008:3001 \
   -e CUSTOM_USER=e4779 -e PASSWORD="$(cat /srv/homelab/desk/desk.secret)" \
+  -e PUID=1000 -e PGID=1000 \
   -e TITLE=desk -e SELKIES_ENCODER=x264enc,jpeg \
   -e PIXELFLUX_WAYLAND=true -e DISPLAY= \
   -v /srv/homelab/desk/config:/config \
