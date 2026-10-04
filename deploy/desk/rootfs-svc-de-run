@@ -1,34 +1,36 @@
 #!/usr/bin/with-contenv bash
-# desk session: labwc compositor + acme pair, all supervised from here.
+# desk session supervisor: ONE labwc + acme pair, restarts on death.
+# Replaces the stock xfce session of the webtop image.
+
+pkill -x labwc 2>/dev/null
+pkill -x acme 2>/dev/null
+pkill -x p9draw-server 2>/dev/null
+pkill -x 9pserve 2>/dev/null
+pkill -x fontsrv 2>/dev/null
+pkill -x Xwayland 2>/dev/null
+rm -f /tmp/.X1-lock
+sleep 1
+
 mkdir -p /config/.XDG
 chown -R abc:abc /config/.XDG
 
-# compositor (its own backend; config via -C, autostart NOT used)
-(
-  export XDG_RUNTIME_DIR=/config/.XDG
-  unset DISPLAY WAYLAND_DISPLAY
-  exec s6-setuidgid abc labwc -C /config/.config/labwc/rc.xml
-) &
-LABWC=$!
+while :; do
+  (
+    export XDG_RUNTIME_DIR=/config/.XDG
+    unset DISPLAY WAYLAND_DISPLAY
+    exec s6-setuidgid abc labwc -C /config/.config/labwc/rc.xml
+  ) &
+  LABWC=$!
 
-# wait for the compositor socket (skip stale: pick the youngest wayland-N)
-SOCK=""
-for i in $(seq 1 40); do
-  SOCK=$(ls -t /config/.XDG 2>/dev/null | grep -E '^wayland-[0-9]+$' | head -1)
-  [ -n "$SOCK" ] && break
-  sleep 0.5
-done
-echo "desk: compositor socket = $SOCK"
+  for i in $(seq 1 40); do
+    [ -S /config/.XDG/wayland-0 ] && break
+    sleep 0.5
+  done
 
-# acme pair (as abc), relaunching if it dies
-(
-  export XDG_RUNTIME_DIR=/config/.XDG
-  export WAYLAND_DISPLAY="$SOCK"
-  unset DISPLAY
-  while :; do
-    s6-setuidgid abc /usr/local/bin/launch-desk-acme.sh
+  while kill -0 $LABWC 2>/dev/null; do
+    s6-setuidgid abc /usr/local/bin/start-desk-acme-alive || \
+      s6-setuidgid abc /usr/local/bin/start-desk-acme.sh
     sleep 8
   done
-) &
-
-wait $LABWC
+  sleep 2
+done
