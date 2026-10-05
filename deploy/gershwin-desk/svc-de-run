@@ -34,12 +34,16 @@ echo "gershwin-desk: session on DISPLAY=$DISPLAY"
 if [ ! -f /tmp/gd-watch.pid ] || ! kill -0 "$(cat /tmp/gd-watch.pid 2>/dev/null)" 2>/dev/null; then
 (
   echo $$ > /tmp/gd-watch.pid
+  log=/tmp/gd-watch.log
+  echo "$(date +%T) watcher start" >> $log
   last=""
+  bounce_for=""
   while :; do
     sleep 2
     cur=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
     [ -n "$cur" ] || continue
     if [ "$cur" != "$last" ]; then
+      echo "$(date +%T) size change: $last -> $cur" >> $log
       # Selkies resizes in steps (intermediate size, then the viewport) —
       # bounce only after the size holds steady, or Workspace starts on the
       # intermediate size and bakes stale pixels in.
@@ -48,11 +52,17 @@ if [ ! -f /tmp/gd-watch.pid ] || ! kill -0 "$(cat /tmp/gd-watch.pid 2>/dev/null)
         nxt=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
         [ "$nxt" = "$cur" ] && break
         cur=$nxt
+        echo "$(date +%T) still resizing: $cur" >> $log
       done
-      pkill -x Workspace
-      sleep 3
-      last=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
-    else
+      # Bounce only if we have not already bounced AT this size: the client
+      # resize often lands DURING the respawn, and comparing against the
+      # post-bounce read hides it (Workspace then draws for a stale size).
+      if [ "$cur" != "$bounce_for" ]; then
+        echo "$(date +%T) bounce Workspace (stable at $cur)" >> $log
+        pkill -x Workspace
+        bounce_for=$cur
+        sleep 4
+      fi
       last=$cur
     fi
   done
