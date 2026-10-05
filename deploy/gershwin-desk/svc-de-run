@@ -10,6 +10,12 @@ sleep 1
 # bare name; they live in the GNUstep system domain — put them on PATH.
 export PATH="/System/Library/Tools:$PATH"
 
+# UI scale: Selkies HiDPI mode streams device pixels, so Gershwin must render
+# at 2x. NSScreen userSpaceScaleFactor reads the GSScaleFactor user default
+# first (fallback dpi/144 gives 0.667 at 96dpi — hence the tiny UI). Persisted
+# in /config via abc's GNUstep defaults; restart components to apply.
+HOME=/config s6-setuidgid abc /System/Library/Tools/defaults write NSGlobalDomain GSScaleFactor 2.0 2>/dev/null || true
+
 # X display: quadlet sets DISPLAY=:1 and Xvfb is started by the base image.
 # No ls-parsing here: plan9port utils must never leak into this script, and
 # global PATH stays GNU (see Containerfile).
