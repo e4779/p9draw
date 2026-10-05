@@ -27,4 +27,36 @@ fi
 export DISPLAY
 echo "gershwin-desk: session on DISPLAY=$DISPLAY"
 
+# Live-resize redraw: GWDesktopView does not fully repaint when the X screen
+# is RANDR-resized under it (client reconnects at a new viewport size leave
+# stale patches). Watch the size and bounce Workspace on change - gershwin-
+# session respawns it in ~1-2s. Guarded by a pidfile across service restarts.
+if [ ! -f /tmp/gd-watch.pid ] || ! kill -0 "$(cat /tmp/gd-watch.pid 2>/dev/null)" 2>/dev/null; then
+(
+  echo $$ > /tmp/gd-watch.pid
+  last=""
+  while :; do
+    sleep 2
+    cur=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
+    [ -n "$cur" ] || continue
+    if [ "$cur" != "$last" ]; then
+      # Selkies resizes in steps (intermediate size, then the viewport) —
+      # bounce only after the size holds steady, or Workspace starts on the
+      # intermediate size and bakes stale pixels in.
+      for i in 1 2 3 4 5; do
+        sleep 2
+        nxt=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
+        [ "$nxt" = "$cur" ] && break
+        cur=$nxt
+      done
+      pkill -x Workspace
+      sleep 3
+      last=$(xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2}')
+    else
+      last=$cur
+    fi
+  done
+) &
+fi
+
 exec s6-setuidgid abc /usr/local/bin/gershwin-session Workspace Menu WindowManager
