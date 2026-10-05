@@ -25,5 +25,8 @@ RUN ln -sf "$(find /usr /System -name gershwin-session -type f 2>/dev/null | hea
 # --- plan9port from source, per upstream (9fans) instructions
 RUN git clone https://github.com/9fans/plan9port.git /opt/plan9port
 RUN cd /opt/plan9port && ./INSTALL
+# PLAN9 bin must NOT go on the global PATH: plan9port ships its own ls/cp/grep
+# whose flags and output differ from GNU — that hijack broke init-nginx's cp
+# (nginx served a literal-template config) and any PATH-parsing scripts.
+# The acme launcher (launch-gershwin-acme.sh) prepends it locally instead.
 ENV PLAN9=/opt/plan9port
-ENV PATH=/opt/plan9port/bin:${PATH}

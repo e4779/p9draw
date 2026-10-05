@@ -6,12 +6,19 @@
 pkill -x gershwin-session 2>/dev/null
 sleep 1
 
-# discover the X display the base image started (usually :1)
-for i in $(seq 1 60); do
-  [ -d /tmp/.X11-unix ] && [ -n "$(ls /tmp/.X11-unix 2>/dev/null)" ] && break
-  sleep 0.5
-done
-export DISPLAY=":$(ls /tmp/.X11-unix 2>/dev/null | head -1 | sed 's/^X//')"
+# gershwin-session spawns its components (Workspace, Menu, WindowManager) by
+# bare name; they live in the GNUstep system domain — put them on PATH.
+export PATH="/System/Library/Tools:$PATH"
+
+# X display: quadlet sets DISPLAY=:1 and Xvfb is started by the base image.
+# No ls-parsing here: plan9port utils must never leak into this script, and
+# global PATH stays GNU (see Containerfile).
+DISPLAY="${DISPLAY:-:1}"
+if [ ! -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; then
+  echo "gershwin-desk: WARNING: socket for DISPLAY=$DISPLAY missing, forcing :1"
+  DISPLAY=":1"
+fi
+export DISPLAY
 echo "gershwin-desk: session on DISPLAY=$DISPLAY"
 
 exec s6-setuidgid abc /usr/local/bin/gershwin-session Workspace Menu WindowManager
