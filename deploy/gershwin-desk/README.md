@@ -26,6 +26,17 @@ acme-web, desk, ad-hoc webtop-gershwin — четыре стека, ноль к�
 - `launch-gershwin-acme.sh` — fontsrv+acme одним запуском (без respawn,
   Exit = выход — решение пользователя).
 
+## Масштаб и обои (HiDPI)
+
+- Selkies в режиме HiDPI отдаёт физические пиксели клиента (X-экран = экрану
+  браузера 1:1). UI Gershwin масштабируется через `GSScaleFactor` в defaults
+  abc — пишется при старте сессии (svc-de-run), 2.0 = двойной масштаб.
+  Fallback без него — dpi/144, при 96 dpi даёт 0.667 (вот почему «всё мелко»).
+- Обои: GWDesktopView рисует их в логических пикселях (компенсирует scale
+  factor), поэтому картинка должна быть нативного разрешения и со стилем
+  ScaleStyle: `desktopinfo` → usebackimage=1, imagepath=/config/Wallpaper.jpg,
+  imagestyle=3 (в defaults abc, /config volume).
+
 ## Сборка и развёртывание
 
 ```sh
