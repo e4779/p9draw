@@ -31,8 +31,10 @@ rc, plumber, fontsrv, 9p-клиент. Это **база акме-семейст
 
 ## Статус на hlab (2026-09-30)
 - Источник: librarian-кэш ~/.cache/checkouts/github.com/9fans/plan9port.
-- Сборка осознанно отложена (сузили масштаб до исходников). Когда
-  понадобится графический acme: собирать в webtop-gershwin
+- Сборка осознанно отложена (сузили масштаб до исходников). Графический acme
+  живёт в образе gershwin-desk (deploy/gershwin-desk/Containerfile собирает
+  plan9port по ./INSTALL; webtop-gershwin снесён 2026-10-05). Было: собирать
+  в webtop-gershwin
   (/usr/local/plan9, deps: build-essential + libx11/libxext/libxft/
   libfontconfig-dev уже стоят), затем DISPLAY=:1 acme & — и он виден
   в браузере на порту 3002.

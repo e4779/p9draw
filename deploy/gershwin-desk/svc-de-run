@@ -1,0 +1,17 @@
+#!/usr/bin/with-contenv bash
+# gershwin-desk session: Gershwin (Workspace + Menu + WindowManager) on the X
+# display. X path, NOT the PIXELFLUX_WAYLAND scene used by the old labwc desk:
+# gershwin-session/uROSWM are X11 (uROSWM is XCB). Selkies captures the X
+# display — the base image default architecture (as in webtop-gershwin, 2026-09).
+pkill -x gershwin-session 2>/dev/null
+sleep 1
+
+# discover the X display the base image started (usually :1)
+for i in $(seq 1 60); do
+  [ -d /tmp/.X11-unix ] && [ -n "$(ls /tmp/.X11-unix 2>/dev/null)" ] && break
+  sleep 0.5
+done
+export DISPLAY=":$(ls /tmp/.X11-unix 2>/dev/null | head -1 | sed 's/^X//')"
+echo "gershwin-desk: session on DISPLAY=$DISPLAY"
+
+exec s6-setuidgid abc /usr/local/bin/gershwin-session Workspace Menu WindowManager

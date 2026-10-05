@@ -1,0 +1,29 @@
+# gershwin-desk — Gershwin (GNUstep) desktop + plan9port, Selkies transport.
+# Base: linuxserver webtop debian-xfce (Xvfb :1 + Selkies + s6 plumbing).
+# The stock xfce session is replaced at RUNTIME by an svc-de override
+# (quadlet bind-mount, see homelab/quadlet/gershwin-desk.container);
+# Gershwin and plan9port are built INTO the image so the desk survives
+# restarts without network access or rebuilds.
+FROM lscr.io/linuxserver/webtop:debian-xfce
+
+# plan9port deps per p9draw docs (build-essential + X11/fontconfig);
+# gershwin-developer's bootstrap.sh installs the rest of its own deps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates build-essential \
+      libx11-dev libxext-dev libxft-dev libfontconfig-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Gershwin from source, per upstream gershwin-developer instructions:
+#   clone -> bootstrap.sh -> checkout.sh -> make install   (all as root)
+RUN git clone https://github.com/gershwin-desktop/gershwin-developer.git /Developer
+RUN DEBIAN_FRONTEND=noninteractive /Developer/Library/Scripts/bootstrap.sh
+RUN /Developer/Library/Scripts/checkout.sh
+RUN cd /Developer && make install
+# gershwin-session lands in the GNUstep system domain; expose it on PATH
+RUN ln -sf "$(find /usr /System -name gershwin-session -type f 2>/dev/null | head -1)" /usr/local/bin/gershwin-session
+
+# --- plan9port from source, per upstream (9fans) instructions
+RUN git clone https://github.com/9fans/plan9port.git /opt/plan9port
+RUN cd /opt/plan9port && ./INSTALL
+ENV PLAN9=/opt/plan9port
+ENV PATH=/opt/plan9port/bin:${PATH}
